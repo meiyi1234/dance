@@ -56,3 +56,11 @@ static domain_name_servers=172.19.215.140 172.19.50.39
 **Graphical desktop sharing**
 
 14. Follow instructions here to [set up VNC](https://www.realvnc.com/en/connect/docs/raspberry-pi.html#setting-up-your-raspberry-pi). Using this setup does not require a static IP, just an account with RealVNC and an internet-connected pi.
+
+
+### client.py
+See comments in the file for instructions and details.
+
+
+### comm.py
+
