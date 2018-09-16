@@ -1,4 +1,5 @@
 import unittest
+from unittest import skip
 
 from bitstring import BitStream, BitArray
 
@@ -42,6 +43,18 @@ class TestFrame(unittest.TestCase):
         assert(self.ifr.is_checksum_valid())
         assert(self.sfr.is_checksum_valid())
         assert(self.hfr.is_checksum_valid())
+
+    
+    def test_checksum_invalid(self):
+        with self.assertRaises(ValueError):
+            ba = self.sfr.bitarr
+            ba[-10] = not ba[-10]  # Change checksum
+            fr = Frame(ba, self.sfr.info, escaped=False)
+
+        with self.assertRaises(ValueError):
+            ba = self.ifr.bitarr
+            ba[20] = not ba[20]  # Change info
+            fr = Frame(ba, self.ifr.info, escaped=False)
 
     def test_get_frame_sort(self):
         assert(get_frame_sort(BitStream(self.ifr.bitarr[8:24])) == Frame.Sort.I)

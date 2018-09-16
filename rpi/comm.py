@@ -29,16 +29,19 @@ class Frame:
             self.bitarr = BitArray(Frame.unescape(bitarr.bytes))
         else:
             self.bytes = Frame.escape(bitarr.bytes)   # type bytes. Contains full, escaped frame
-            self.bitarr = bitarr                    # type bitarr. Contains unescaped frame
+            self.bitarr = bitarr                      # type bitarr. Contains unescaped frame
 
         self.control = self.bitarr[8:24]                          # type bitarr
         self.info = self.bitarr[24:-24].bytes if info else None   # type bitarr
-        self.checksum = self.bitarr[-24:-8].uint                  # type uint
+        self.checksum = self.bitarr[-24:-8].uint                  # type uint, does NOT recalculate
+        if not self.is_checksum_valid():
+            raise ValueError('Checksum received ({}) is not equal to checksum calculated ({})'
+                .format(self.checksum, self.calc_checksum(self.bitarr[8:-24].bytes)))
 
         self.bytes = self.bitarr.bytes   
 
 
-    def get_checksum(self, bytes_):
+    def calc_checksum(self, bytes_):
         return crc16xmodem(bytes_)
 
     @staticmethod
@@ -69,12 +72,13 @@ class Frame:
         return bytes(unescaped)
 
     def is_checksum_valid(self):
-        return self.bitarr[-24:-8].uint == self.get_checksum(self.bitarr[8:-24].bytes)
+        return self.checksum == self.calc_checksum(self.bitarr[8:-24].bytes)
 
     @staticmethod
-    def get_frame(bitarr):
+    def make_frame(bitarr):
         """Creates I, S or H-frame based on bitarr. Bitarr must contain exactly 
         one complete frame, excluding start and stop bytes.
+        Frame returned is of type Frame, not its subclass.
         """
         control = bitarr[0:16]
         sort = get_frame_sort(control)
@@ -91,6 +95,7 @@ class Frame:
             frame = Frame(bitarr, info=False, escaped=True)
             frame.SORT = Frame.Sort.H
 
+        return frame
 
 
 class IFrame(Frame):
@@ -106,7 +111,7 @@ class IFrame(Frame):
             'uint:8, uint:8, bits',
             control_byte1, control_byte2, info
         ).bytes
-        checksum = self.get_checksum(checksum_bytes)
+        checksum = self.calc_checksum(checksum_bytes)  # Calculated over unescaped bytes
 
         bitarr = BitArray(bitstring.pack(
             'uint:8, uint:8, uint:8, bits, uint:16, uint:8',
@@ -149,7 +154,7 @@ class SFrame(Frame):
             START_STOP_BYTE,
             control_byte1,
             control_byte2,
-            self.get_checksum(checksum_bytes),
+            self.calc_checksum(checksum_bytes),
             START_STOP_BYTE
         ))
 
@@ -177,7 +182,7 @@ class HFrame(Frame):
             START_STOP_BYTE,
             control_byte1,
             control_byte2,
-            self.get_checksum(checksum_bytes),
+            self.calc_checksum(checksum_bytes),
             START_STOP_BYTE
         ))
 
@@ -224,7 +229,5 @@ def receive():
 
 
 if __name__ == '__main__':
-    fr = IFrame(b'\x2A\x3B')
-    fr2 = SFrame(SFrame.Type.RNR)
     hf = HFrame()
-    
+    print(hf.bitarr)
