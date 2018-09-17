@@ -3,8 +3,8 @@ from time import sleep
 
 import serial_asyncio
 
-from circ_buffer import CircularBuffer
-from framing import START_STOP_BYTE, Frame, HFrame
+from circ_buffer import CircularBuffer              # From file crc_buffer.py
+from framing import START_STOP_BYTE, Frame, HFrame  # From file framing.py
 
 
 send_sequence = 1
@@ -29,11 +29,12 @@ class SerialProtocol(asyncio.Protocol):
 
         self.transport = transport
         print('Port opened')
-        self.transport.write(HFrame(receive_sequence).bytes)  # Write serial data via transport
+        self.transport.write(HFrame(receive_sequence).bytes)  # Write serial data via transport. Send the Handshake response to Arduino.
         self._ready.set()
 
     async def _send_frames(self):
         """Send messages to the server as they become available."""
+        """Does this function send anything back to the Arduino??? Doesn't seem so..."""
         global send_sequence
 
         await self._ready.wait()
@@ -52,13 +53,13 @@ class SerialProtocol(asyncio.Protocol):
 
         buf.write(data)
         if data.count(START_STOP_BYTE) > 1:
-            bytearr = buf.read_until(START_STOP_BYTE, ignore_first_byte=True)
+            bytearr = buf.read_until(START_STOP_BYTE, ignore_first_byte=True)   # Cuts off the start and stop bytes
             try:
-                fr = Frame.make_frame(bytearr)
+                fr = Frame.make_frame(bytearr)                                  # Makes the I or S frame to send to server
+                # TODO: Send ACK frame back to Arduino
             except ValueError as e:
-                # TODO: send rej frame
+                # TODO: send rej frame back to Arduino, requesting for a resend
                 print(e)
-
  
     def connection_lost(self, exc):
         print('Port closed')
