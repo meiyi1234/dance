@@ -203,7 +203,7 @@ class HFrame(Frame):
         """Creates an H-frame for sending.
         To classify a received frame, use the Frame.make_frame method.
         """
-        control_byte1 = bitstring.pack('uint:7, bool=1', receive_seq).uint
+        control_byte1 = bitstring.pack('uint:7, bool=1', receive_seq).uint  # receive_seq is 7 bits long
         control_byte2 = 3  # 0b00000011 (RR, type H-frame)
 
         checksum_bytes = bitstring.pack(
@@ -213,12 +213,11 @@ class HFrame(Frame):
 
         bitarr = BitArray(bitstring.pack(
             'uint:8, uint:8, uint:8, uint:16, uint:8',
-            START_STOP_BYTE,
-            control_byte1,
-            control_byte2,
-            self.calc_checksum(checksum_bytes),
-            START_STOP_BYTE
+            START_STOP_BYTE,                    # 0x7e
+            control_byte1,                      # receive_seq
+            control_byte2,                      # 0x03
+            self.calc_checksum(checksum_bytes), # crc16xmodem(checksum_bytes)
+            START_STOP_BYTE                     # 0x03
         ))
 
         super().__init__(bitarr, info=False, escaped=False)
-
