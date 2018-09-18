@@ -32,14 +32,14 @@ class Frame:
             self.bitarr = bitarr          # type bitarr. Contains unescaped frame, no start/stop bytes
 
         self.control = self.bitarr[8:24]   # type bitarr
-        self.recv_seq = self.control[0:7].uint                
+        self.recv_seq = self.control[0:7].uint
         self.info = self.bitarr[24:-24].bytes if info else None   # type bitarr
         self.checksum = self.bitarr[-24:-8].uint                  # type uint, does NOT recalculate
         if not self.is_checksum_valid():
             raise ValueError('Checksum received ({}) is not equal to checksum calculated ({})'
                 .format(self.checksum, self.calc_checksum(self.bitarr[8:-24].bytes)))
 
-        self.bytes = self.bitarr.bytes   
+        self.bytes = self.bitarr.bytes
 
     def calc_checksum(self, bytes_):
         return crc16xmodem(bytes_)
@@ -100,6 +100,7 @@ class Frame:
         if sort == Frame.Sort.I:
             frame = Frame(bitarr, info=True, escaped=True)
             frame.SORT = Frame.Sort.I
+            frame.send_seq = control[8:15].uint
 
         elif sort == Frame.Sort.S:
             frame = Frame(bitarr, info=False, escaped=True)
@@ -135,6 +136,8 @@ class IFrame(Frame):
         To classify a received frame, use the Frame.make_frame method.
         info should be ascii-encoded bytes.
         """
+        self.send_seq = send_seq
+
         control_byte1 = bitstring.pack('uint:7, bool', recv_seq, p_f).uint
         control_byte2 = bitstring.pack('uint:7, bool=0', send_seq).uint
 
@@ -160,9 +163,9 @@ class IFrame(Frame):
 class SFrame(Frame):
     class Type(Enum):
         RR = 0    # Receive Ready to accept more I-frames
-        REJ = 1   # REJect, Go-Back-N retransmission request for an I-frame 
+        REJ = 1   # REJect, Go-Back-N retransmission request for an I-frame
         RNR = 2   # Receive Not Ready to accept more I-frames
-        SREJ = 3  # Selective REJect, retransmission request for one I-frame  
+        SREJ = 3  # Selective REJect, retransmission request for one I-frame
 
     SORT = Frame.Sort.S
 

@@ -32,7 +32,6 @@ class SerialProtocol(asyncio.Protocol):
         print('Port opened')
         self.transport.write(HFrame(self.recv_seq).bytes)
         self._incr_send_seq()
-        self._ready.set()
 
     async def _send_messages(self):
         """Send messages to the server as they become available."""
@@ -69,22 +68,28 @@ class SerialProtocol(asyncio.Protocol):
                 # TODO: send rej frame
                 return
 
-            self._incr_recv_seq()
-            # One or more frames were lost
-            if fr.send_seq != self.recv_seq:
-                print('Frame(s) {} missing'.format(
-                    [i for i in range(self.recv_seq, fr.send_seq)])
-                )
-                self._decr_recv_seq()
-                # TODO: send rej frame
-                return
+            if fr.SORT == Frame.SORT.H:
+                if fr.recv_seq == self.send_seq:   # Arduino echoed seq sent
+                    print('Received handshake ack, can now send data to the Arduino')
+                    self._ready.set()
 
-            print('\nfr: {}\n'.format(fr))
-
-            # Acknowledge receipt of I-frame
-            # TODO: ack every n frames?
-            if fr.SORT == Frame.Sort.I:
+            elif fr.SORT == Frame.SORT.I:
                 print('Acknowledging I-frame')
+
+                self._incr_recv_seq()
+                # One or more frames were lost
+                if fr.send_seq != self.recv_seq:
+                    print('Frame(s) {} missing'.format(
+                        [i for i in range(self.recv_seq, fr.send_seq)])
+                    )
+                    self._decr_recv_seq()
+                    # TODO: send rej frame
+                    return
+
+                print('\nfr: {}\n'.format(fr))
+
+                # Acknowledge receipt of I-frame
+                # TODO: ack every n frames?
                 self._ack_iframe()
 
     def connection_lost(self, exc):
