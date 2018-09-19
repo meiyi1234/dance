@@ -94,6 +94,9 @@ class Frame:
         one complete frame, including start and stop bytes.
         Frame returned is of type Frame, not its subclass.
         """
+        if (bytes_[0] != START_STOP_BYTE or bytes_[-1] != START_STOP_BYTE):
+            raise ValueError('Message does not contain either start byte, stop byte, or both')
+
         bitarr = BitArray(bytes_)
         control = bitarr[8:24]
         sort = Frame.get_frame_sort(control)

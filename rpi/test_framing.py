@@ -6,7 +6,7 @@ from bitstring import BitStream, BitArray
 from framing import Frame, IFrame, SFrame, HFrame
 
 
-class TestFrame(unittest.TestCase):
+class TestFraming(unittest.TestCase):
     def setUp(self):
         self.ifr = IFrame(2, 5, b'\x12\x7D\x4B')
         self.sfr = SFrame(3, SFrame.Type.RR)

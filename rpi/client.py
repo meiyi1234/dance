@@ -68,7 +68,11 @@ if __name__ == '__main__':
         sys.exit()
 
     client = Client(ip_addr, port_num, key)
-    input('Press enter to send action')
-    client.send('test', {'voltage': 0, 'current': 1, 'power': 2, 'cumpower': 3})
-    sleep(2)
+    action = None
+    while action != 'logout':
+        print('Enter dance move to send, or `logout` to close connection')
+        action = sys.stdin.readline().strip()
+        client.send(action, {'voltage': 0, 'current': 1, 'power': 2, 'cumpower': 3})
+
+    sleep(1)
     client.end()

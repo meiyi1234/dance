@@ -70,7 +70,7 @@ class SerialProtocol(asyncio.Protocol):
 
             try:
                 fr = Frame.make_frame(bytearr)
-            except ValueError as e:  # Checksum invalid
+            except ValueError as e:  # Frame error
                 print(e)
                 # TODO: send rej frame
                 return
