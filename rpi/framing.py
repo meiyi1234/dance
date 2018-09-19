@@ -102,16 +102,19 @@ class Frame:
         sort = Frame.get_frame_sort(control)
         if sort == Frame.Sort.I:
             frame = Frame(bitarr, info=True, escaped=True)
+            frame.__class__ = IFrame
             frame.SORT = Frame.Sort.I
             frame.send_seq = control[8:15].uint
 
         elif sort == Frame.Sort.S:
             frame = Frame(bitarr, info=False, escaped=True)
+            frame.__class__ = SFrame
             frame.SORT = Frame.Sort.S
             frame.type = Frame.get_sframe_type(control)
 
         elif sort == Frame.Sort.H:
             frame = Frame(bitarr, info=False, escaped=True)
+            frame.__class__ = HFrame
             frame.SORT = Frame.Sort.H
 
         return frame

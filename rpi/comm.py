@@ -1,5 +1,4 @@
 import asyncio
-from time import sleep
 
 import serial_asyncio
 from bitstring import BitArray
@@ -19,12 +18,21 @@ class SerialProtocol(asyncio.Protocol):
         self._ready = asyncio.Event()
         asyncio.ensure_future(self._send_messages())
 
-        self.iframe_sent = asyncio.Event()
-        self.sending_iframe = False
+        self._send_handshake_task = None
+        self._ack_iframe_ready = asyncio.Event()
+
         self.send_seq = 1   # Secondary increments its own send_seq separately
         self.recv_seq = 0   # Secondary increments its own recv_seq separately
         self.start_stop_count = 0
+
         self.buf = CircularBuffer(1024)  # 1024-byte buffer
+
+    async def _send_handshake(self):
+        """Send handshake every 2 seconds."""
+        while True:
+            self.transport.write(HFrame(self.send_seq).bytes)
+            print('Sent handshake')
+            await asyncio.sleep(2)
 
     def connection_made(self, transport):
         """On connection, send a handshake message to the Arduino.
@@ -33,8 +41,9 @@ class SerialProtocol(asyncio.Protocol):
         (see https://github.com/pyserial/pyserial-asyncio/issues/3)
         """
         self.transport = transport
-        self.transport.write(HFrame(self.send_seq).bytes)
-        print('Port opened, sent handshake request')
+        print('Port opened')
+        # Periodically send handshake
+        self._send_handshake_task = asyncio.ensure_future(self._send_handshake())
 
     async def _send_messages(self):
         """Send messages to the server as they become available."""
@@ -43,9 +52,6 @@ class SerialProtocol(asyncio.Protocol):
             data = await self.queue.get()
             self.transport.write(data)
             print('Message sent: {}'.format(BitArray(data)))
-            if self.sending_iframe:
-                self._incr_send_seq()
-                self.sending_iframe = False
 
     async def send_message(self, message):
         """Feed a message to the sender coroutine."""
@@ -53,8 +59,8 @@ class SerialProtocol(asyncio.Protocol):
 
     async def send_iframe(self, message):
         """Send iframe and mark send_seq for incrementing after sending."""
-        self.sending_iframe = True
         await self.send_message(message)
+        self._incr_send_seq()
 
     def data_received(self, data):
         global csvfile
@@ -78,7 +84,9 @@ class SerialProtocol(asyncio.Protocol):
             if fr.SORT == Frame.Sort.H:
                 if fr.recv_seq == self.send_seq:   # Arduino echoed seq sent
                     print('Received handshake ack, can now send data to the Arduino')
-                    self._ready.set()
+                    self._send_handshake_task.cancel()  # Stop sending handshake
+                    self._ready.set()  # Enable sending messages
+                    asyncio.ensure_future(self._ack_iframe())  # Enable acks
 
             elif fr.SORT == Frame.Sort.I:
                 self._incr_recv_seq()
@@ -97,20 +105,23 @@ class SerialProtocol(asyncio.Protocol):
                 # Acknowledge receipt of I-frame
                 # TODO: ack every n frames?
                 print('Acknowledging I-frame')
-                self._ack_iframe()
+                self._ack_iframe_ready.set()
 
     def connection_lost(self, exc):
         print('Port closed')
         self.transport.loop.stop()
 
-    def _ack_iframe(self):
+    async def _ack_iframe(self):
         """Send an S-frame with N(R) field set to (self.recv_seq + 1) mod 128.
         N(R) acknowledges that all frames with N(S) values up to N(R)−1 mod 128
         have been received and indicates the N(S) of the next frame it expects
         to receive.
         """
-        sfr = SFrame((self.recv_seq + 1) & 0x7F, SFrame.Type.RR)
-        self.send_message(sfr.bytes)
+        while True:
+            await self._ack_iframe_ready.wait()
+            sfr = SFrame((self.recv_seq + 1) & 0x7F, SFrame.Type.RR)
+            await self.send_message(sfr.bytes)
+            self._ack_iframe_ready.clear()
 
     def _incr_send_seq(self):
         """Increment send sequence number. Must be called after sending an
@@ -138,7 +149,6 @@ if __name__ == '__main__':
     loop = asyncio.get_event_loop()
     coro = serial_asyncio.create_serial_connection(loop, SerialProtocol, '/dev/ttyS0', baudrate=9600)
     _, proto = loop.run_until_complete(coro)
-    sleep(2)
     message = IFrame(proto.recv_seq, proto.send_seq, b'abcdef')
     asyncio.ensure_future(feed_frame(proto, message))
 

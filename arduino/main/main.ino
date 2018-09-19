@@ -86,6 +86,13 @@ void TaskRecv(void *pvParameters)  // This is a task.
         else if (sort == IFrame) {
           Serial.println("Received I-frame bytes: ");
           Serial.write(msg, i+1);
+          Serial.println("");
+          Serial.println("Sending I-frame back");
+          Serial3.write(msg, i+1);
+        }
+        else {  // s-frame
+          Serial.println("Received S-frame bytes, doing nothing: ");
+          Serial.write(msg, i+1);
         }
         
         memset(msg, NULL, i+1);
