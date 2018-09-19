@@ -79,6 +79,8 @@ class Frame:
                     unescaped.append(START_STOP_BYTE)
                 elif byte == 93:   # 7D was xor-ed
                     unescaped.append(ESCAPE_BYTE)
+                else:
+                    raise ValueError('Byte {} escaped when it should not be'.format(byte))
                 escape_state = 0
             else:
                 unescaped.append(byte)
@@ -157,6 +159,9 @@ class IFrame(Frame):
 
         super().__init__(bitarr, info=True, escaped=False)
 
+    def to_ascii(self):
+        return self.info.decode('ascii')
+
 
 class SFrame(Frame):
     class Type(Enum):
@@ -211,7 +216,7 @@ class HFrame(Frame):
         bitarr = BitArray(bitstring.pack(
             'uint:8, uint:8, uint:8, uint:16, uint:8',
             START_STOP_BYTE,                     # 0x7E
-            control_byte1,                       # receive_seq
+            control_byte1,                       # receive_seq, p/f
             control_byte2,                       # 0x03
             self.calc_checksum(checksum_bytes),  # crc16xmodem(checksum_bytes)
             START_STOP_BYTE                      # 0x7E

@@ -8,6 +8,9 @@ from circ_buffer import CircularBuffer
 from framing import START_STOP_BYTE, Frame, IFrame, SFrame, HFrame
 
 
+csvfile = None
+
+
 class SerialProtocol(asyncio.Protocol):
     """Based on https://stackoverflow.com/questions/30937042/asyncio-persisent-client-protocol-class-using-queue"""
     def __init__(self):
@@ -54,6 +57,8 @@ class SerialProtocol(asyncio.Protocol):
         await self.send_message(message)
 
     def data_received(self, data):
+        global csvfile
+
         self.buf.write(data)
         self.start_stop_count += data.count(START_STOP_BYTE)
 
@@ -85,6 +90,9 @@ class SerialProtocol(asyncio.Protocol):
                     self._decr_recv_seq()
                     # TODO: send rej frame
                     return
+
+                print('Writing data to file')
+                csvfile.write(fr.to_ascii() + '\n')
 
                 # Acknowledge receipt of I-frame
                 # TODO: ack every n frames?
@@ -125,6 +133,8 @@ async def feed_frame(protocol, frame):
 
 
 if __name__ == '__main__':
+    csvfile = open('readings.csv', 'a+', newline='')
+
     loop = asyncio.get_event_loop()
     coro = serial_asyncio.create_serial_connection(loop, SerialProtocol, '/dev/ttyS0', baudrate=9600)
     _, proto = loop.run_until_complete(coro)
@@ -138,3 +148,4 @@ if __name__ == '__main__':
         print('Closing connection')
 
     loop.close()
+    csvfile.close()
