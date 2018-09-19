@@ -20,7 +20,7 @@ class Frame:
     SFRAME_MASK = BitArray('0x000C')
 
     def __init__(self, bitarr, info, escaped):
-        """Stores complete, escaped frame in self.bytes and unescaped frame in self.bitarr.
+        """Stores escaped frame in self.bytes and unescaped frame in self.bitarr.
         Other useful fields such as control and checksum are also stored as instance
         members.
         """
@@ -39,10 +39,11 @@ class Frame:
             raise ValueError('Checksum received ({}) is not equal to checksum calculated ({})'
                 .format(self.checksum, self.calc_checksum(self.bitarr[8:-24].bytes)))
 
-        self.bytes = self.bitarr.bytes
-
     def calc_checksum(self, bytes_):
         return crc16xmodem(bytes_)
+
+    def is_checksum_valid(self):
+        return self.checksum == self.calc_checksum(self.bitarr[8:-24].bytes)
 
     @staticmethod
     def escape(bytes_):
@@ -85,17 +86,14 @@ class Frame:
 
         return bytes(unescaped)
 
-    def is_checksum_valid(self):
-        return self.checksum == self.calc_checksum(self.bitarr[8:-24].bytes)
-
     @staticmethod
-    def make_frame(bytearr):
+    def make_frame(bytes_):
         """Creates I, S or H-frame based on bitarr. Bitarr must contain exactly
         one complete frame, including start and stop bytes.
         Frame returned is of type Frame, not its subclass.
         """
-        bitarr = BitArray(bytes(bytearr[1:-2]))
-        control = bitarr[0:16]
+        bitarr = BitArray(bytes_)
+        control = bitarr[8:24]
         sort = Frame.get_frame_sort(control)
         if sort == Frame.Sort.I:
             frame = Frame(bitarr, info=True, escaped=True)
@@ -198,11 +196,11 @@ class SFrame(Frame):
 class HFrame(Frame):
     SORT = Frame.Sort.H
 
-    def __init__(self, recv_seq):
+    def __init__(self, send_seq):
         """Creates an H-frame for sending.
         To classify a received frame, use the Frame.make_frame method.
         """
-        control_byte1 = bitstring.pack('uint:7, bool=1', recv_seq).uint
+        control_byte1 = bitstring.pack('uint:7, bool=1', send_seq).uint
         control_byte2 = 3  # 0b00000011 (RR, type H-frame)
 
         checksum_bytes = bitstring.pack(

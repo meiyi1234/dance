@@ -2,9 +2,10 @@ import asyncio
 from time import sleep
 
 import serial_asyncio
+from bitstring import BitArray
 
 from circ_buffer import CircularBuffer
-from framing import START_STOP_BYTE, Frame, SFrame, HFrame
+from framing import START_STOP_BYTE, Frame, IFrame, SFrame, HFrame
 
 
 class SerialProtocol(asyncio.Protocol):
@@ -29,9 +30,8 @@ class SerialProtocol(asyncio.Protocol):
         (see https://github.com/pyserial/pyserial-asyncio/issues/3)
         """
         self.transport = transport
-        print('Port opened')
-        self.transport.write(HFrame(self.recv_seq).bytes)
-        self._incr_send_seq()
+        self.transport.write(HFrame(self.send_seq).bytes)
+        print('Port opened, sent handshake request')
 
     async def _send_messages(self):
         """Send messages to the server as they become available."""
@@ -39,7 +39,7 @@ class SerialProtocol(asyncio.Protocol):
         while True:
             data = await self.queue.get()
             self.transport.write(data)
-            print('Message sent: {}'.format(message))
+            print('Message sent: {}'.format(BitArray(data)))
             if self.sending_iframe:
                 self._incr_send_seq()
                 self.sending_iframe = False
@@ -61,6 +61,8 @@ class SerialProtocol(asyncio.Protocol):
             bytearr = self.buf.read_until(START_STOP_BYTE, ignore_first_byte=True)
             self.start_stop_count -= bytearr.count(START_STOP_BYTE)
 
+            print('Received bytes: {}'.format(BitArray(bytearr)))
+
             try:
                 fr = Frame.make_frame(bytearr)
             except ValueError as e:  # Checksum invalid
@@ -68,14 +70,12 @@ class SerialProtocol(asyncio.Protocol):
                 # TODO: send rej frame
                 return
 
-            if fr.SORT == Frame.SORT.H:
+            if fr.SORT == Frame.Sort.H:
                 if fr.recv_seq == self.send_seq:   # Arduino echoed seq sent
                     print('Received handshake ack, can now send data to the Arduino')
                     self._ready.set()
 
-            elif fr.SORT == Frame.SORT.I:
-                print('Acknowledging I-frame')
-
+            elif fr.SORT == Frame.Sort.I:
                 self._incr_recv_seq()
                 # One or more frames were lost
                 if fr.send_seq != self.recv_seq:
@@ -86,10 +86,9 @@ class SerialProtocol(asyncio.Protocol):
                     # TODO: send rej frame
                     return
 
-                print('\nfr: {}\n'.format(fr))
-
                 # Acknowledge receipt of I-frame
                 # TODO: ack every n frames?
+                print('Acknowledging I-frame')
                 self._ack_iframe()
 
     def connection_lost(self, exc):
@@ -105,7 +104,7 @@ class SerialProtocol(asyncio.Protocol):
         sfr = SFrame((self.recv_seq + 1) & 0x7F, SFrame.Type.RR)
         self.send_message(sfr.bytes)
 
-    async def _incr_send_seq(self):
+    def _incr_send_seq(self):
         """Increment send sequence number. Must be called after sending an
         I-frame.
         """
@@ -118,23 +117,24 @@ class SerialProtocol(asyncio.Protocol):
         self.recv_seq = (self.recv_seq - 1) & 0x7F  # 0-127
 
 
-async def feed_message(protocol, bytes_, frame_sort):
-    if frame_sort == Frame.SORT.I:
-        await protocol.send_iframe(bytes_)
+async def feed_frame(protocol, frame):
+    if frame.SORT == Frame.Sort.I:
+        await protocol.send_iframe(frame.bytes)
     else:
-        await protocol.send_message(bytes_)
+        await protocol.send_message(frame.bytes)
 
 
 if __name__ == '__main__':
     loop = asyncio.get_event_loop()
-    coro = serial_asyncio.create_serial_connection(loop, SerialProtocol, 'COM14', baudrate=38400)
+    coro = serial_asyncio.create_serial_connection(loop, SerialProtocol, '/dev/ttyS0', baudrate=9600)
     _, proto = loop.run_until_complete(coro)
     sleep(2)
-    message = b'check'
-    asyncio.ensure_future(feed_message(proto, message, None))
+    message = IFrame(proto.recv_seq, proto.send_seq, b'abcdef')
+    asyncio.ensure_future(feed_frame(proto, message))
 
     try:
         loop.run_forever()
     except KeyboardInterrupt:
         print('Closing connection')
+
     loop.close()

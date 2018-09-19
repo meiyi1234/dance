@@ -43,4 +43,4 @@ class CircularBuffer:
                     continue
                 else:
                     break
-        return bytearr
+        return bytes(bytearr)

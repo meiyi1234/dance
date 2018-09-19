@@ -9,8 +9,8 @@ from framing import Frame, IFrame, SFrame, HFrame
 class TestFrame(unittest.TestCase):
     def setUp(self):
         self.ifr = IFrame(2, 5, b'\x12\x7D\x4B')
-        self.sfr = SFrame(1, SFrame.Type.RR)
-        self.hfr = HFrame(0)
+        self.sfr = SFrame(3, SFrame.Type.RR)
+        self.hfr = HFrame(1)
 
     def test_escape(self):
         in1 = b'\x12\x3A\x4B'          # No special chars
@@ -39,21 +39,33 @@ class TestFrame(unittest.TestCase):
         assert(out5 == b'\x7E\x12\x3A\x4B\x7E')  # don't escape start and end chars
         assert(Frame.unescape(out5) == in5)
 
-    def test_checksum_valid(self):
-        assert(self.ifr.is_checksum_valid())
-        assert(self.sfr.is_checksum_valid())
-        assert(self.hfr.is_checksum_valid())
+    def test_make_iframe(self):
+        fr = Frame.make_frame(self.ifr.bytes)
+        assert(fr.SORT == Frame.Sort.I)
+        assert(fr.recv_seq == 2)
+        assert(fr.send_seq == 5)
 
-    def test_checksum_invalid(self):
+    def test_make_sframe(self):
+        fr = Frame.make_frame(self.sfr.bytes)
+        assert(fr.SORT == Frame.Sort.S)
+        assert(fr.recv_seq == 3)
+        assert(fr.type == SFrame.Type.RR)
+
+    def test_make_hframe(self):
+        fr = Frame.make_frame(self.hfr.bytes)
+        assert(fr.SORT == Frame.Sort.H)
+        assert(fr.recv_seq == 1)
+
+    def test_checksum_valid(self):
         with self.assertRaises(ValueError):
             ba = self.sfr.bitarr
             ba[-10] = not ba[-10]  # Change checksum
-            fr = Frame(ba, self.sfr.info, escaped=False)
+            Frame(ba, self.sfr.info, escaped=False)
 
         with self.assertRaises(ValueError):
             ba = self.ifr.bitarr
             ba[20] = not ba[20]  # Change info
-            fr = Frame(ba, self.ifr.info, escaped=False)
+            Frame(ba, self.ifr.info, escaped=False)
 
     def test_get_frame_sort(self):
         assert(Frame.get_frame_sort(BitStream(self.ifr.bitarr[8:24])) == Frame.Sort.I)
