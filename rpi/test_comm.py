@@ -9,7 +9,7 @@ class TestComm(unittest.TestCase):
         handshake = HFrame(1).bytes
         proto = SerialProtocol()
         for byte in handshake:
-            proto.data_received(byte)
+            proto.data_received([byte])
 
 
 if __name__ == '__main__':
