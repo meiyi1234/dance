@@ -1,6 +1,3 @@
-/* TO-DO: control is not calculated in I-Frame yet.
-          checksum is not calculated in all frames yet.
-*/
 #include <Arduino_FreeRTOS.h>
 #include <task.h>
 #include <queue.h>
@@ -12,12 +9,15 @@ const byte NUM_GY521 = 3;                 // Number of sensors
 byte sensor_loops;
 int AcX, AcY, AcZ, Tmp, GyX, GyY, GyZ;  // Reads only one set of Gyro & Accel at one time,
                                         // next cycle takes in the next set of readings from another sensor. 16 bits long.
-int voltMeasurement, currentMeasurement;
-double voltVal, currentVout, currentVal, powerVal, energyVal = 0;
+double voltVal, currentVal, powerVal, energyVal = 0;
 unsigned long startTime, currentTime, timeDelta;
+
+// Global variables below used for I-Frame, global since must keep in memory, a resend is possible.
 double AcXRx, AcYRx, AcZRx, GyXRx, GyYRx, GyZRx;
 double voltRx, currentRx, powerRx, energyRx;
 int checksum, control;
+byte receive_seq = 0;
+byte send_seq = 0;
 
 QueueHandle_t xQueue0;
 SemaphoreHandle_t UninterruptedReadSemaphore = NULL;  // Ensures ReadValues run properly without SendValues running
@@ -32,28 +32,84 @@ const byte final2Bits_SFrame = 0x01;
 const byte SFRAME_REJ = 0x01;
 const byte SFRAME_RR = 0x00;
 
-byte receive_seq = 0;
-bool firstIFrame = false;
+// Returns the checksum number
+uint16_t crc16(uint8_t const *buf, int len) {
+    /* Sample use
+    uint16_t chk = crc16(&buf[1], 2);  // Calculate checksum on bytes at index 1 and 2
+    bool is_valid = chk == (buf[3] << 8) | buf[4]
+    */
+    uint16_t remainder = 0x0000;
+    uint16_t poly = 0x1021;
+    for (int byte = 0; byte < len; ++byte) {
+        remainder ^= (buf[byte] << 8);
+        for (uint8_t bit = 8; bit > 0; --bit) {
+            if (remainder & 0x8000) {
+                remainder = (remainder << 1) ^ poly;
+            } else {
+                remainder = (remainder << 1);
+            }
+        }
+    }
+    return remainder;
+}
 
+bool isHFrameCorrect(byte* buf) {
+  int checkNum = buf[3] << 8 | buf[4];
+  return buf[0] == START && buf[2] == final2Bits_HFrame && crc16(&buf[1], 2) == checkNum && buf[5] == STOP;
+}
+
+bool isSFrameCorrect(byte *buf) {
+  int checkNum = buf[3] << 8 | buf[4];
+//  Serial.print("S original checksum is: "); Serial.print(checkNum); Serial.print("\t"); Serial.print("S calculated checksum is: "); Serial.println(crc16(&buf[1], 2));
+  return buf[0] == START && buf[2] == final2Bits_SFrame && crc16(&buf[1], 2) == checkNum && buf[5] == STOP;
+}
+
+// Handshake between Arduino and RPi
 void establishContact() {
   bool handshake = false;
+  bool expectStopByte = false;
+  // msg[0] = START, msg[1] = receive_seq, msg[2] = frame, msg[3] = checkNum, msg[4] = checkNum, msg[5] = STOP
+  byte msg[256];
+  byte i = -1;           // to fill buf
   while (!handshake) {
-    if (Serial.available()) {
-      // HFrame contains START (8 bits - byte), receive_seq (8 bits), type H-frame (8 bits),
-      // checksum (16 bits - integer), STOP (8 bits)
-      uint64_t HFrame = (uint64_t)(Serial.read());
-      
-      // Check whether start, stop & RR frames are correct
-      if(isHFrameCorrect(HFrame)) {
-        // Send it back to the RPi, handshake verified
-        Serial.write(START);
-        receive_seq = (byte)((HFrame >> 32) % 0x100);
-        Serial.write(receive_seq);
-        Serial.write(final2Bits_HFrame);
-        
-        Serial.write(STOP);
-        handshake = firstIFrame = true;
+    if (Serial3.available() > 0) {
+      msg[++i] = Serial3.read();
+
+      if (i == 0 && msg[i] != START) { // If is receiving first byte but is not START byte
+        Serial.print("Error, frame doesnt start with 0x7e");
+        i = -1;
+        expectStopByte = false;
+        memset(msg, NULL, 1);
       }
+      else if (msg[i] == START && !expectStopByte) {  // If is receiving the START byte
+        expectStopByte = true;                        // this is the START byte, the next such byte should be STOP byte
+      }
+      else if (msg[i] == STOP && expectStopByte) {  // If receiving STOP byte
+          if (!isHFrameCorrect(msg)) {
+            Serial.println("H-frame invalid, not doing anything");
+            memset(msg, NULL, 1);
+            i = -1;
+            break;
+          }
+          
+          // If handshake, repeat message back to primary
+          Serial.print("Returning bytes: ");
+          Serial.write(msg, i + 1);
+          Serial.println("");
+          Serial3.write(msg, i + 1);
+          Serial.println("Success");
+          handshake = true;
+        
+          memset(msg, NULL, i + 1);
+          i = -1;
+          expectStopByte = false;
+      }
+      else {  // receiving the other bytes in between
+        Serial.print("byte is ");
+        Serial.write(msg[i]);
+        Serial.println("");
+      }  
+      delay(10);
     }
   }
 }
@@ -87,8 +143,9 @@ void setup() {
   }
   startTime = millis();
   
-  // initialize serial communication at 38400 bits per second:
-  Serial.begin(38400);
+  // initialize Serial communication at 38400 bits per second:
+  Serial3.begin(9600);
+  Serial.begin(9600);
   Serial.println("Start up");
   establishContact();
   Serial.println("Finish contact");
@@ -102,22 +159,12 @@ void setup() {
   vTaskStartScheduler();
 }
 
-bool isHFrameCorrect(uint64_t HFrame) {
-  byte check = (byte)((HFrame >> 24) % 0x100);
-  return (byte)(HFrame >> 40) == START && (byte)(HFrame % 0x100) == STOP && check == final2Bits_HFrame;
-}
-
-bool isSFrameCorrect(uint64_t SFrame) {
-  byte check = (byte)((SFrame >> 24) % 0x04);
-  return (byte)(SFrame >> 40) == START && (byte)(SFrame % 0x100) == STOP && check == final2Bits_SFrame;
-}
-
 void serialDoubleWrite(double data) {
   byte * b = (byte *) &data;
-  Serial.write(b[0]);
-  Serial.write(b[1]);
-  Serial.write(b[2]);
-  Serial.write(b[3]);
+  Serial3.write(b[0]);
+  Serial3.write(b[1]);
+  Serial3.write(b[2]);
+  Serial3.write(b[3]);
 }
 
 // Reads in the gyro & accel values
@@ -155,11 +202,11 @@ void ReadValues(void *pvParameters) {
           sensor_loops++;
         }
         currentTime = millis();
-        voltMeasurement = analogRead(A0);
-        currentMeasurement = analogRead(A1);
+        int voltMeasurement = analogRead(A0);
+        int currentMeasurement = analogRead(A1);
         timeDelta = currentTime - startTime;
         voltVal = (double) voltMeasurement * 5 * 2 / 1023.0;                      // Volt, voltage divider halves voltage
-        currentVout = (double) currentMeasurement * 5 / 1023.0;                   // INA169 Vout
+        double currentVout = (double) currentMeasurement * 5 / 1023.0;                   // INA169 Vout
         currentVal = (currentVout * 1000.0) * 1000.0 / (10 * 10000.0);            // mA, Rs = 10 Ohms Rl = 10k Ohms
         powerVal = voltVal * currentVal;                                          // mW
         energyVal = energyVal + ((powerVal / 1000) * ((double) timeDelta / 1000));// Joules
@@ -188,92 +235,102 @@ void ReadValues(void *pvParameters) {
 }
 
 // Reads the accelerometer and gyroscope values from the Queue
+// Checks for an S-Frame so that Arduino knows that it is ok to send data
 void SendValues(void *pvParameters) {
-  bool canSendIFrame = false;
+  uint8_t *buf;             // buf[0] = START, buf[1] = receive_seq, buf[2] = frame, buf[3] = checkNum, buf[4] = checkNum, buf[5] = STOP
+  bool expectStopByte;
+  bool canSendNewIFrame = false;
+  bool serialStillSending;  // Checks whether is there any incoming new bytes
+  byte i = -1;               // used to fill buf
   prevWakeTimeSend = xTaskGetTickCount();
   while (true) {
     if (xSemaphoreTake(UninterruptedReadSemaphore, 0) == pdTRUE) {
-      if (Serial.available() > 0) {
-        xSemaphoreGive(BlockReadSemaphore);
-        xSemaphoreGive(UninterruptedReadSemaphore);
-        vTaskDelayUntil(&prevWakeTimeSend, (1 / portTICK_PERIOD_MS));
-                
-        if(!firstIFrame) {          // if not the first IFrame, need to receive S-Frame to signal ACK from RPi
-          uint64_t newFrame = (uint64_t)Serial.read();
-          // SFrame contains START (8 bits), receive_seq (8 bits), type SFrame (8 bits),
-          // checksum (16 bits), STOP (8 bits)
-          
-          // Check what type of frame is it
-          if((byte)(newFrame % 0b100) == final2Bits_HFrame) {      // is a H-Frame
-            if(isHFrameCorrect(newFrame)) {
-              establishContact();  
+      canSendNewIFrame = expectStopByte = false;
+      serialStillSending = true;
+      while(serialStillSending) {
+        if (Serial3.available() > 0) {
+          buf[++i] = Serial3.read();
+          if(buf[i] == -1) {                  // there is no data available
+            serialStillSending = false;
+          }
+          else if(i == 0 && buf[i] != START) {     // if expecting starting byte but receive otherwise
+            Serial.print("Error, Frame does not start with 0x7e");
+            i = -1;
+            expectStopByte = false;
+            memset(buf, NULL, 1);
+          }
+          else if (buf[i] == START && !expectStopByte) { // START byte received, the next identical byte received will be a STOP byte
+            expectStopByte = true;
+          }
+          else if (buf[i] == STOP && expectStopByte) {  // STOP byte is received, terminate the frame
+            if(buf[2] == final2Bits_HFrame && isHFrameCorrect(&buf[0])) {   // is a H-Frame, verify its correct
+              establishContact();
               vTaskDelayUntil(&prevWakeTimeSend, (2 / portTICK_PERIOD_MS));      
               xSemaphoreGive(BlockReadSemaphore);
               xSemaphoreGive(UninterruptedReadSemaphore);
+              return;
             }
-          }
-          else if((byte)(newFrame % 0b100) == final2Bits_SFrame) { // is a S-Frame
-            if(isSFrameCorrect(newFrame)) {
+            else if(buf[2] == final2Bits_SFrame && isSFrameCorrect(&buf[0])) {
               // Check whether need to resend data
-              byte resend = (byte)((newFrame >> 26) % 0x04);
-              if(resend == SFRAME_REJ) {          // RPi rejects the frame sent by Arduino, must resend
-                Serial.write(START);
-                Serial.write(control);
-                Serial.write((int)AcXRx);
-                Serial.write((int)AcYRx);
-                Serial.write((int)AcZRx);
-                Serial.write((int)GyXRx);
-                Serial.write((int)GyYRx);
-                Serial.write((int)GyZRx);
+              // Trim to only frame[3:2]]. If true, RPi rejected the frame sent by Arduino, must resend
+              receive_seq = buf[1] >> 1;
+              if((buf[2] >> 2 & 0b11) == SFRAME_REJ) {
+                Serial3.write(START);
+                Serial3.write(control);
+                Serial3.write((int)AcXRx);
+                Serial3.write((int)AcYRx);
+                Serial3.write((int)AcZRx);
+                Serial3.write((int)GyXRx);
+                Serial3.write((int)GyYRx);
+                Serial3.write((int)GyZRx);
                 serialDoubleWrite(voltRx);
                 serialDoubleWrite(currentRx);
                 serialDoubleWrite(powerRx);
                 serialDoubleWrite(energyRx);
-                Serial.write(checksum);
-                Serial.write(STOP);
+                Serial3.write(checksum);
+                Serial3.write(STOP);
               }
-              else if(resend == SFRAME_RR) {
-                canSendIFrame = true;
+              else if((buf[2] >> 2 & 0b11) == SFRAME_RR) {
+                canSendNewIFrame = true;
               }
             }
           }
         }
-        else {  // Assume we can simply send an IFrame. TODO: Check serial port for any possible HFrame  
-          canSendIFrame = true;
-          firstIFrame = false;
-        }        
-        if(canSendIFrame) {
-          xQueueReceive(xQueue0, &AcXRx, 0);
-          xQueueReceive(xQueue0, &AcYRx, 0);
-          xQueueReceive(xQueue0, &AcZRx, 0);
-          xQueueReceive(xQueue0, &GyXRx, 0);
-          xQueueReceive(xQueue0, &GyYRx, 0);
-          xQueueReceive(xQueue0, &GyZRx, 0);
-          xQueueReceive(xQueue0, &voltRx, 0);
-          xQueueReceive(xQueue0, &currentRx, 0);
-          xQueueReceive(xQueue0, &powerRx, 0);
-          xQueueReceive(xQueue0, &energyRx, 0);
-          Serial.println("Receive");
-          Serial.write(START);
-          Serial.write(control);
-          Serial.write((int)AcXRx);
-          Serial.write((int)AcYRx);
-          Serial.write()int)AcZRx);
-          Serial.write((int)GyXRx);
-          Serial.write((int)GyYRx);
-          Serial.write((int)GyZRx);
-          serialDoubleWrite(voltRx);
-          serialDoubleWrite(currentRx);
-          serialDoubleWrite(powerRx);
-          serialDoubleWrite(energyRx);
-          Serial.write(checksum);
-          Serial.write(STOP);
-          vTaskDelayUntil(&prevWakeTimeSend, (2 / portTICK_PERIOD_MS));
-          xSemaphoreGive(UninterruptedReadSemaphore);
-        }  
-        vTaskDelayUntil(&prevWakeTimeSend, (2 / portTICK_PERIOD_MS));
-        xSemaphoreGive(UninterruptedReadSemaphore);
       }
+      memset(buf, NULL, 1);     // Reset buffer to reuse later in I-Frame
+      if(canSendNewIFrame || receive_seq == 0) {
+        xQueueReceive(xQueue0, &AcXRx, 0);
+        xQueueReceive(xQueue0, &AcYRx, 0);
+        xQueueReceive(xQueue0, &AcZRx, 0);
+        xQueueReceive(xQueue0, &GyXRx, 0);
+        xQueueReceive(xQueue0, &GyYRx, 0);
+        xQueueReceive(xQueue0, &GyZRx, 0);
+        xQueueReceive(xQueue0, &voltRx, 0);
+        xQueueReceive(xQueue0, &currentRx, 0);
+        xQueueReceive(xQueue0, &powerRx, 0);
+        xQueueReceive(xQueue0, &energyRx, 0);
+        Serial.println("Receive from Queue");
+        Serial3.write(START);
+        control = ((receive_seq << 1 | 0b1) << 8) | (send_seq++ << 1);
+        Serial3.write(control);
+        Serial3.write((int)AcXRx);
+        Serial3.write((int)AcYRx);
+        Serial3.write((int)AcZRx);
+        Serial3.write((int)GyXRx);
+        Serial3.write((int)GyYRx);
+        Serial3.write((int)GyZRx);
+        serialDoubleWrite(voltRx);
+        serialDoubleWrite(currentRx);
+        serialDoubleWrite(powerRx);
+        serialDoubleWrite(energyRx);
+        buf[0] = (receive_seq << 1 | 0b1);
+        buf[1] = (send_seq << 1 | 0b1);
+        checksum = crc16(&buf[0], 2);
+        Serial3.write(checksum);
+        Serial3.write(STOP);
+      }
+      vTaskDelayUntil(&prevWakeTimeSend, (2 / portTICK_PERIOD_MS));
+      xSemaphoreGive(UninterruptedReadSemaphore);
     }
   }
 }
