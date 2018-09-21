@@ -1,4 +1,4 @@
-// TO-DO - Implement circular buffer to store data received, so that the buffer is more than one.
+// TO-DO: Settle case where the frames that need to be sent exceed over 128 (warps back to frame 0). E.g. Frame 127 - 128 & Frame 0.
 #include <CircularBuffer.h>
 #include <Arduino_FreeRTOS.h>
 #include <task.h>
