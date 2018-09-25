@@ -47,50 +47,36 @@ uint16_t crc16(uint8_t const *buf, int len) {
   uint16_t poly = 0x1021;
   for (int i = 0; i < len; ++i) {
     remainder ^= (buf[i] << 8);
-    for (uint8_t bit = 8; bit > 0; --bit) {
-      if (remainder & 0x8000) {
-        remainder = (remainder << 1) ^ poly;
-      } else {
-        remainder = (remainder << 1);
-      }
+    for (byte bit = 8; bit > 0; --bit) {
+      if (remainder & 0x8000) remainder = (remainder << 1) ^ poly;
+      else                    remainder = (remainder << 1);
     }
   }
   return remainder;
 }
 
 bool isFrameCorrect(byte* buf, char type) {
-  byte check;
-  bool isFrameCorrect;
-
   // Calculates the length of buf. Also START byte check.
-  byte len = 0;
-  if (buf[len] != START) {
-    return false;         // does not start with START byte, fail
-  } else {
-    len++;
-  }
+  byte len;
+  if (buf[0] != START)  return false; // does not start with START byte, fail
+  else                  len = 1;      // start with the first data byte
+
   while (buf[len] != STOP && len < 100) { // Arbitary number 100 set to prevent infinite loop in case frame does not terminate properly
     len++;
   }
-  len++;
-
-  int checkNum = buf[len - 3] << 8 | buf[len - 2];
+  len++;                                  // include STOP byte as part of len
 
   // Checks control_byte1
-  if (type == 'H') {          // if is H-Frame
-    check = final2Bits_HFrame;
-  }
-  else if (type == 'S') {     // if is S-Frame
-    check = final2Bits_SFrame;
-  }
-  if (type == 'I') {          // if is I-Frame
-    isFrameCorrect = (buf[2] == 0x00 || buf[2] == 0x02);
-  }
-  else {                      // is a H-Frame or S-Frame
-    isFrameCorrect = (buf[2] == check);
-  }
+  byte check;
+  bool isFrameCorrect;
+  if (type == 'H')      check = final2Bits_HFrame;
+  else if (type == 'S') check = final2Bits_SFrame;
+
+  if (type == 'I')  isFrameCorrect = (buf[2] == 0x00 || buf[2] == 0x02);
+  else              isFrameCorrect = (buf[2] == check);
   //
 
+  int checkNum = buf[len - 3] << 8 | buf[len - 2];
   return isFrameCorrect && crc16(&buf[1], 2) == checkNum && buf[len - 1] == STOP;
 }
 
@@ -105,7 +91,7 @@ void establishContact() {
     if (Serial.available() > 0) {
       msg[++i] = Serial.read();
 
-      if (i == 0 && msg[i] != START) { // If is receiving first byte but is not START byte
+      if (i == 0 && msg[i] != START) { // If receiving first byte but is not START byte
         Serial.println("Error, frame doesnt start with 0x7e");
         i = -1;
         expectStopByte = false;
