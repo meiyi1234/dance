@@ -1,5 +1,5 @@
 // TO-DO: Settle case where the frames that need to be sent exceed over 128 (warps back to frame 0). E.g. Frame 127 - 128 & Frame 0.
-// Bug: The Tasks just won't get created. If I shift the code in loop() now to setup, the program gets stuck at Handshaking even after its succesful.
+// TO-TEST: Receiving IFrames & SFrames properly, and sending them appropriately. Cannot test because cannot insert NULL character (0x00) into Serial Monitor
 #include <CircularBuffer.h>
 #include <Arduino_FreeRTOS.h>
 #include <task.h>
@@ -134,7 +134,6 @@ void establishContact() {
 
 // Reads in the gyro & accel values
 void ReadValues(void *pvParameters) {
-  (void) pvParameters;
   int AcX, AcY, AcZ, Tmp, GyX, GyY, GyZ;
   double voltVal, currentVal, powerVal, energyVal;
   prevWakeTimeRead = xTaskGetTickCount();
@@ -206,14 +205,13 @@ void ReadValues(void *pvParameters) {
 // Reads the accelerometer and gyroscope values from the Queue
 // Checks for an S-Frame so that Arduino knows that it is ok to send data
 void SendValues(void *pvParameters) {
-  (void) pvParameters;
-  byte buf[50];         // buf[0] = START, buf[1] = receive_seq, buf[2] = frame, buf[3] = checkNum, buf[4] = checkNum, buf[5] = STOP
-  bool expectStopByte;  // Signal when a START byte has occured, so that the next such byte is a STOP byte.
-  byte i = -1;          // used to fill buf
-  byte receive_seq;     // Read receive sequence number from RPi to compare with numSend
-  double AcXRx, AcYRx, AcZRx, GyXRx, GyYRx, GyZRx;  // Reads only one set of Gyro & Accel from the Queue at one time,
-  // next cycle takes in the next set of readings from another sensor. 16 bits long.
-  int AcX, AcY, AcZ, GyX, GyY, GyZ;                 // to typecast the double values in the queue back to int
+  byte buf[50];               // buf[0] = START, buf[1] = receive_seq, buf[2] = frame, buf[3] = checkNum, buf[4] = checkNum, buf[5] = STOP
+  bool expectStopByte = false;// Signal when a START byte has occured, so that the next such byte is a STOP byte.
+  byte i = -1;                // used to fill buf
+  byte receive_seq;           // Read receive sequence number from RPi to compare with numSend
+  double AcXRx, AcYRx, AcZRx, GyXRx, GyYRx, GyZRx;// Reads only one set of Gyro & Accel from the Queue at one time,
+                                                  // next cycle takes in the next set of readings from another sensor. 16 bits long.
+  int AcX, AcY, AcZ, GyX, GyY, GyZ;               // to typecast the double values in the queue back to int
   char AcXChar[4], AcYChar[4], AcZChar[4], GyXChar[4], GyYChar[4], GyZChar[4],
        voltChar[8], currentChar[8], powerChar[8], energyChar[8],
        startChar[3], control1Char[2], control2Char[2], checksumChar[4], stopChar[3];
@@ -221,10 +219,8 @@ void SendValues(void *pvParameters) {
   char iframe[100];                                 // The full I-Frame to be sent
 
   prevWakeTimeSend = xTaskGetTickCount();
-  if (xSemaphoreTake(UninterruptedReadSemaphore, 0) == pdTRUE) {
-    Serial.println("HI");
-    while (true) {
-      expectStopByte = false;
+  while (true) {
+    if (xSemaphoreTake(UninterruptedReadSemaphore, 0) == pdTRUE) {
       if (Serial.available() > 0) {
         buf[++i] = Serial.read();
         if (i == 0 && buf[i] != START) {    // if expecting starting byte but receive otherwise
@@ -237,12 +233,13 @@ void SendValues(void *pvParameters) {
           expectStopByte = true;
         }
         else if (buf[i] == STOP && expectStopByte) {  // STOP byte is received, terminate the frame
+          Serial.println("Frame terminated");
           if (buf[2] == final2Bits_HFrame && isFrameCorrect(&buf[0], 'H')) {  // is a H-Frame, verify its correct
             establishContact();
             vTaskDelayUntil(&prevWakeTimeSend, (2 / portTICK_PERIOD_MS));
             xSemaphoreGive(BlockReadSemaphore);
             xSemaphoreGive(UninterruptedReadSemaphore);
-            return;
+            continue;
           }
           else if (buf[2] == final2Bits_SFrame && isFrameCorrect(&buf[0], 'S')) { // is a S-Frame, verify its correct
             // Check whether need to resend data
@@ -255,7 +252,7 @@ void SendValues(void *pvParameters) {
                 for (int j = 0; j < len; j++) {
                   Serial.write(IFramesBuffer[i][j]);
                 }
-                Serial.print("Frame number "); Serial.print(i); Serial.print(" = "); Serial.println(IFramesBuffer[i]);
+                Serial.print("Frame number "); Serial.print(i); Serial.print(" = "); Serial.write(IFramesBuffer[i]);
               }
             }
             else if ((buf[2] >> 2 & 0b11) == SFRAME_RR) {
@@ -359,9 +356,7 @@ void SendValues(void *pvParameters) {
             }
           }
         }
-        else {
-          Serial.print(buf[i]); Serial.print(", ");
-        }
+        else  Serial.print("byte is "); Serial.write(buf[i]); Serial.println("");
       }
       vTaskDelayUntil(&prevWakeTimeSend, (2 / portTICK_PERIOD_MS));
       xSemaphoreGive(UninterruptedReadSemaphore);
@@ -404,17 +399,14 @@ void setup() {
   Serial.println("Start up");
   establishContact();
   Serial.println("Finish contact");
-  xQueue0 = xQueueCreate(36, sizeof(double));
   UninterruptedReadSemaphore = xSemaphoreCreateMutex();
   BlockReadSemaphore = xSemaphoreCreateBinary();
+  xQueue0 = xQueueCreate(36, sizeof(double));
   xSemaphoreGive(UninterruptedReadSemaphore);
   xSemaphoreGive(BlockReadSemaphore);
-}
-
-void loop() {
-  Serial.print("Preparing Tasks");
-  xTaskCreate(ReadValues, (const portCHAR *)"ReadValues", 128/*2000*/, NULL, 2, NULL);
-  xTaskCreate(SendValues, (const portCHAR *)"SendValues", 128/*2500*/, NULL, 2, NULL);
-  Serial.print("Tasks Ready");
+  xTaskCreate(ReadValues, "ReadValues", 2000, NULL, 2, NULL);
+  xTaskCreate(SendValues, "SendValues", 2500, NULL, 2, NULL);
   vTaskStartScheduler();
 }
+
+void loop() {}
