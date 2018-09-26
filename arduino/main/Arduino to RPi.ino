@@ -1,5 +1,5 @@
 // TO-DO: Settle case where the frames that need to be sent exceed over 128 (warps back to frame 0). E.g. Frame 127 - 128 & Frame 0.
-// TO-TEST: Receiving IFrames & SFrames properly, and sending them appropriately. Cannot test because cannot insert NULL character (0x00) into Serial Monitor
+// BUG: Receiving handshake a 2nd time causes the bytes to be received inappropriately after 2nd handshake is over.
 #include <CircularBuffer.h>
 #include <Arduino_FreeRTOS.h>
 #include <task.h>
@@ -77,7 +77,8 @@ bool isFrameCorrect(byte* buf, char type) {
   //
 
   int checkNum = buf[len - 3] << 8 | buf[len - 2];
-  return isFrameCorrect && crc16(&buf[1], 2) == checkNum && buf[len - 1] == STOP;
+  Serial.print("Calc checksum is "); Serial.print(crc16(&buf[1], len - 4)); Serial.print(" vs input checksum is "); Serial.println(checkNum);
+  return isFrameCorrect && crc16(&buf[1], len - 4) == checkNum && buf[len - 1] == STOP;
 }
 
 // Handshake between Arduino and RPi
@@ -101,6 +102,7 @@ void establishContact() {
         expectStopByte = true;                        // this is the START byte, the next such byte should be STOP byte
       }
       else if (msg[i] == STOP && expectStopByte) {  // If receiving STOP byte
+        Serial.println("Frame terminated, expect receive H-Frame");
         if (!isFrameCorrect(msg, 'H')) {
           Serial.println("H-frame invalid, not doing anything");
           expectStopByte = false;
@@ -210,7 +212,7 @@ void SendValues(void *pvParameters) {
   byte i = -1;                // used to fill buf
   byte receive_seq;           // Read receive sequence number from RPi to compare with numSend
   double AcXRx, AcYRx, AcZRx, GyXRx, GyYRx, GyZRx;// Reads only one set of Gyro & Accel from the Queue at one time,
-                                                  // next cycle takes in the next set of readings from another sensor. 16 bits long.
+  // next cycle takes in the next set of readings from another sensor. 16 bits long.
   int AcX, AcY, AcZ, GyX, GyY, GyZ;               // to typecast the double values in the queue back to int
   char AcXChar[4], AcYChar[4], AcZChar[4], GyXChar[4], GyYChar[4], GyZChar[4],
        voltChar[8], currentChar[8], powerChar[8], energyChar[8],
@@ -235,18 +237,19 @@ void SendValues(void *pvParameters) {
         else if (buf[i] == STOP && expectStopByte) {  // STOP byte is received, terminate the frame
           Serial.println("Frame terminated");
           if (buf[2] == final2Bits_HFrame && isFrameCorrect(&buf[0], 'H')) {  // is a H-Frame, verify its correct
+            Serial.println("H-Frame received, expecting another H-frame to handshake again");
             establishContact();
             vTaskDelayUntil(&prevWakeTimeSend, (2 / portTICK_PERIOD_MS));
             xSemaphoreGive(BlockReadSemaphore);
             xSemaphoreGive(UninterruptedReadSemaphore);
-            continue;
           }
-          else if (buf[2] == final2Bits_SFrame && isFrameCorrect(&buf[0], 'S')) { // is a S-Frame, verify its correct
+          else if ( ( (buf[2] & 0b11) == final2Bits_SFrame) && isFrameCorrect(&buf[0], 'S') ) { // is an S-Frame, verify its correct
             // Check whether need to resend data
             // Trim to only frame[3:2]]. If true, RPi rejected the frame sent by Arduino, must resend
             receive_seq = (int)(buf[1] >> 1);
             if ((buf[2] >> 2 & 0b11) == SFRAME_REJ) {
               receive_seq = buf[1] >> 1;
+              Serial.print("RPi has not received all frames, resending frames "); Serial.print(receive_seq); Serial.print(" to "); Serial.println(numSend);
               for (int i = receive_seq; i <= numSend; i++) {
                 int len = strlen(IFramesBuffer[i]);
                 for (int j = 0; j < len; j++) {
@@ -257,6 +260,7 @@ void SendValues(void *pvParameters) {
             }
             else if ((buf[2] >> 2 & 0b11) == SFRAME_RR) {
               receive_seq = buf[1] >> 1;
+              Serial.print("RPi ready to receive frame number "); Serial.println(receive_seq);
               xQueueReceive(xQueue0, &AcXRx, 0);
               xQueueReceive(xQueue0, &AcYRx, 0);
               xQueueReceive(xQueue0, &AcZRx, 0);
@@ -339,22 +343,22 @@ void SendValues(void *pvParameters) {
               }
             }
           }
-          else if (buf[2] == 0x00 || buf[2] == 0x02) { // is an I-Frame, verify its correct
-            if (isFrameCorrect(&buf[0], 'I')) {
-              Serial.println("I-Frame received! Sending S-Frame");
-
-              // Send S-Frame back to RPi
-              Serial.write(START);
-              byte msg[2];
-              msg[0] = buf[1];
-              msg[1] = 0x01;
-              Serial.write(msg[0]);
-              Serial.write(msg[1]);
-              int checkNum = crc16(&msg[0], 2);
-              Serial.write(checkNum);
-              Serial.write(STOP);
-            }
+          else if ( ( (buf[1] & 0b1) == 0b1) && ( (buf[2] & 0b1) == 0b0) && isFrameCorrect(&buf[0], 'I') ) { // is an I-Frame, verify its correct
+            // Send S-Frame back to RPi
+            Serial.println("I-Frame received! Sending S-Frame");
+            Serial.write(START);
+            byte msg[2];
+            msg[0] = buf[1];
+            msg[1] = 0x01;
+            Serial.write(msg[0]);
+            Serial.write(msg[1]);
+            int checkNum = crc16(&msg[0], 2);
+            Serial.write(checkNum);
+            Serial.write(STOP);
           }
+          memset(buf, NULL, i + 1);
+          i = -1;
+          expectStopByte = false;
         }
         else  Serial.print("byte is "); Serial.write(buf[i]); Serial.println("");
       }
