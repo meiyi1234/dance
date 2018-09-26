@@ -1,4 +1,7 @@
 // TO-DO: Settle case where the frames that need to be sent exceed over 128 (warps back to frame 0). E.g. Frame 127 - 128 & Frame 0.
+// TO-DO: Unable to test CircularBuffer since the data provided only happens once now. Not even sure if Task Scheduler works correctly w/o receiving constant flux of values.
+// TO-DO: Due to above, REJ S-Frame cannot be tested as well.
+// TO-DO: Checksum for I-Frame is not yet verified.
 // BUG: Receiving handshake a 2nd time causes the bytes to be received inappropriately after 2nd handshake is over.
 #include <CircularBuffer.h>
 #include <Arduino_FreeRTOS.h>
@@ -136,7 +139,7 @@ void establishContact() {
 
 // Reads in the gyro & accel values
 void ReadValues(void *pvParameters) {
-  int AcX, AcY, AcZ, Tmp, GyX, GyY, GyZ;
+  double AcX, AcY, AcZ, Tmp, GyX, GyY, GyZ;
   double voltVal, currentVal, powerVal, energyVal;
   prevWakeTimeRead = xTaskGetTickCount();
   while (true) {
@@ -160,6 +163,7 @@ void ReadValues(void *pvParameters) {
           GyY = Wire.read() << 8 | Wire.read(); // 0x45 (GYRO_YOUT_H) & 0x46 (GYRO_YOUT_L)
           GyZ = Wire.read() << 8 | Wire.read(); // 0x47 (GYRO_ZOUT_H) & 0x48 (GYRO_ZOUT_L)
           Wire.endTransmission(true);
+          AcX = AcY = AcZ = GyX = GyY = GyZ = voltVal = currentVal = powerVal = energyVal = 7897;
           Serial.print(sensor_loops); Serial.print(" | ");
           Serial.print("AcX = "); Serial.print(AcX);
           Serial.print(" | AcY = "); Serial.print(AcY);
@@ -179,13 +183,13 @@ void ReadValues(void *pvParameters) {
         double currentVal = (currentVout * 1000.0) * 1000.0 / (10 * 10000.0);            // mA, Rs = 10 Ohms Rl = 10k Ohms
         double powerVal = voltVal * currentVal;                                          // mW
         double energyVal = energyVal + ((powerVal / 1000) * ((double) timeDelta / 1000));// Joules
+        AcX = AcY = AcZ = GyX = GyY = GyZ = voltVal = currentVal = powerVal = energyVal = 7897;
         Serial.print("Voltage(V) = "); Serial.print(voltVal);
         Serial.print(" | Current(mA) = "); Serial.print(currentVal);
         Serial.print(" | Power(mW) = "); Serial.print(powerVal);
         Serial.print(" | Energy(J) = "); Serial.println(energyVal);
         startTime = currentTime;
 
-        AcX = AcY = AcZ = GyX = GyY = GyZ = voltVal = currentVal = powerVal = energyVal = 1.0;
         xQueueSendToBack(xQueue0, &AcX, 0);
         xQueueSendToBack(xQueue0, &AcY, 0);
         xQueueSendToBack(xQueue0, &AcZ, 0);
@@ -213,10 +217,9 @@ void SendValues(void *pvParameters) {
   byte receive_seq;           // Read receive sequence number from RPi to compare with numSend
   double AcXRx, AcYRx, AcZRx, GyXRx, GyYRx, GyZRx;// Reads only one set of Gyro & Accel from the Queue at one time,
   // next cycle takes in the next set of readings from another sensor. 16 bits long.
-  int AcX, AcY, AcZ, GyX, GyY, GyZ;               // to typecast the double values in the queue back to int
-  char AcXChar[4], AcYChar[4], AcZChar[4], GyXChar[4], GyYChar[4], GyZChar[4],
-       voltChar[8], currentChar[8], powerChar[8], energyChar[8],
-       startChar[3], control1Char[2], control2Char[2], checksumChar[4], stopChar[3];
+  char AcXChar[5], AcYChar[5], AcZChar[5], GyXChar[5], GyYChar[5], GyZChar[5],
+       voltChar[6], currentChar[6], powerChar[6], energyChar[6],
+       startChar[2], control1Char[4], control2Char[4], checksumChar[6], stopChar[2];
   double voltRx, currentRx, powerRx, energyRx;
   char iframe[100];                                 // The full I-Frame to be sent
 
@@ -272,64 +275,45 @@ void SendValues(void *pvParameters) {
               xQueueReceive(xQueue0, &powerRx, 0);
               xQueueReceive(xQueue0, &energyRx, 0);
               Serial.println("Receive from Queue");
-              AcX = (int)AcXRx;
-              AcY = (int)AcYRx;
-              AcZ = (int)AcZRx;
-              GyX = (int)GyXRx;
-              GyY = (int)GyYRx;
-              GyZ = (int)GyZRx;
               itoa(START, startChar, 16);                       // convert the START byte into char[], therefore containing "7e"
               strcpy(iframe, startChar);
               itoa((receive_seq << 1 | 0b1), control1Char, 16); // 1 byte only therefore only containing one char
               strcat(iframe, control1Char);
               itoa((numSend << 1), control2Char, 16);           // 1 byte only therefore only containing one char
               strcat(iframe, control2Char);
-              // Should I put a comma before the info part?
-              itoa(AcX, AcXChar, 10);     // convert int to char[], with a radix of 10
+              // dtostrf(floatvar, StringLengthIncDecimalPoint, numVarsAfterDecimal, charbuf);
+              dtostrf(AcXRx, 0, 0, AcXChar);      // convert double to char[] with no dp, effectively making it int.
               strcat(iframe, AcXChar);
               strcat(iframe, ",");
-              itoa(AcY, AcYChar, 10);     // convert int to char[], with a radix of 10
+              dtostrf(AcYRx, 0, 0, AcYChar);      // convert double to char[] with no dp, effectively making it int.
               strcat(iframe, AcYChar);
               strcat(iframe, ",");
-              itoa(AcZ, AcZChar, 10);     // convert int to char[], with a radix of 10
+              dtostrf(AcZRx, 0, 0, AcZChar);      // convert double to char[] with no dp, effectively making it int.
               strcat(iframe, AcZChar);
               strcat(iframe, ",");
-              itoa(GyX, GyXChar, 10);     // convert int to char[], with a radix of 10
+              dtostrf(GyXRx, 0, 0, GyXChar);      // convert double to char[] with no dp, effectively making it int.
               strcat(iframe, GyXChar);
               strcat(iframe, ",");
-              itoa(GyY, GyYChar, 10);     // convert int to char[], with a radix of 10
+              dtostrf(GyYRx, 0, 0, GyYChar);      // convert double to char[] with no dp, effectively making it int.
               strcat(iframe, GyYChar);
               strcat(iframe, ",");
-              itoa(GyZ, GyZChar, 10);     // convert int to char[], with a radix of 10
+              dtostrf(GyZRx, 0, 0, GyZChar);      // convert double to char[] with no dp, effectively making it int.
               strcat(iframe, GyZChar);
               strcat(iframe, ",");
-              itoa(voltRx, voltChar, 10); // convert double to char[], with a radix of 10
+              dtostrf(voltRx, 0, 2, voltChar);      // convert double to char[] with 2dp.
               strcat(iframe, voltChar);
               strcat(iframe, ",");
-              itoa(voltRx, currentChar, 10);// convert double to char[], with a radix of 10
+              dtostrf(currentRx, 0, 2, currentChar);// convert double to char[] with 2dp.
               strcat(iframe, currentChar);
               strcat(iframe, ",");
-              itoa(voltRx, powerChar, 10); // convert double to char[], with a radix of 10
+              dtostrf(powerRx, 0, 2, powerChar);    // convert double to char[] with 2dp.
               strcat(iframe, powerChar);
               strcat(iframe, ",");
-              itoa(voltRx, energyChar, 10); // convert double to char[], with a radix of 10
+              dtostrf(energyRx, 0, 2, energyChar);  // convert double to char[] with 2dp.
               strcat(iframe, energyChar);
               Serial.print("Current IFrame before checksum is "); Serial.println(iframe);
 
-              byte msg[30];
-              msg[0] = buf[1];
-              msg[1] = numSend << 1;
-              msg[2] = AcX;
-              msg[4] = AcY;
-              msg[6] = AcZ;
-              msg[8] = GyX;
-              msg[10] = GyY;
-              msg[12] = GyZ;
-              msg[14] = voltRx;
-              msg[18] = currentRx;
-              msg[22] = powerRx;
-              msg[26] = energyRx;
-              int checksum = crc16(&msg[0], 30);
+              int checksum = crc16(&iframe[2], sizeof(iframe) / sizeof(iframe[0]) - 2);
               itoa(checksum, checksumChar, 10);
               strcat(iframe, checksumChar);
               itoa(STOP, stopChar, 16);   // convert the STOP byte into char[], therefore containing "7e"
