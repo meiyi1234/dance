@@ -50,7 +50,7 @@ class Frame:
         """Escapes bytes 7D and 7E with 7D EXCEPT for first and last bytes"""
         escaped = []
         for index, byte in enumerate(bytes_):
-            if (byte == START_STOP_BYTE 
+            if (byte == START_STOP_BYTE
               and not (index == 0 or index == len(bytes_)-1)):
                 escaped.append(ESCAPE_BYTE)
                 escaped.append(94)  # 7E ^ 20 = uint 94
@@ -110,7 +110,7 @@ class Frame:
             frame = Frame(bitarr, info=False, escaped=True)
             frame.__class__ = SFrame
             frame.SORT = Frame.Sort.S
-            frame.type = Frame.get_sframe_type(control)
+            frame.TYPE = Frame.get_sframe_type(control)
 
         elif sort == Frame.Sort.H:
             frame = Frame(bitarr, info=False, escaped=True)
@@ -158,7 +158,7 @@ class IFrame(Frame):
             START_STOP_BYTE,
             control_byte1,
             control_byte2,
-            info,
+            info,             # variable length
             checksum,
             START_STOP_BYTE
         ))
@@ -182,7 +182,7 @@ class SFrame(Frame):
         """Creates an S-frame for sending with type specified.
         To classify a received frame, use the Frame.make_frame method.
         """
-        self.type = sframe_type
+        self.TYPE = sframe_type
 
         control_byte1 = bitstring.pack('uint:7, bool', recv_seq, p_f).uint
         control_byte2 = bitstring.pack('uint:4=0, uint:2, uint:2=1', sframe_type.value).uint

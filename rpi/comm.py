@@ -18,14 +18,19 @@ class SerialProtocol(asyncio.Protocol):
         self._ready = asyncio.Event()
         asyncio.ensure_future(self._send_messages())
 
-        self._send_handshake_task = None
-        self._ack_iframe_ready = asyncio.Event()
+        self._sending_iframe = False
+        self._send_handshake_task = None          # Future
+        self._ack_iframe_ready = asyncio.Event()  # Trigger task ack iframe
+        self._rej_iframe_ready = asyncio.Event()  # Trigger task rej iframe
+        self._secondary_ready = asyncio.Event()   # Block message sending unless secondary ready
 
         self.send_seq = 1   # Secondary increments its own send_seq separately
         self.recv_seq = 0   # Secondary increments its own recv_seq separately
         self.start_stop_count = 0
 
         self.buf = CircularBuffer(1024)  # 1024-byte buffer
+        self.send_buf = {}
+        self.send_buf[1] = []  # Allow appending to first elem
 
     async def _send_handshake(self):
         """Send handshake every 2 seconds."""
@@ -46,12 +51,24 @@ class SerialProtocol(asyncio.Protocol):
         self._send_handshake_task = asyncio.ensure_future(self._send_handshake())
 
     async def _send_messages(self):
-        """Send messages to the server as they become available."""
-        await self._ready.wait()
+        """Send messages to the server as they become available. If RNR is received,
+        waits until RR is received.
+        """
+        await self._ready.wait()  # Wait until handshake is complete
         while True:
+            await self._secondary_ready.wait()  # Wait if RNR received
             data = await self.queue.get()
             self.transport.write(data)
             print('Message sent: {}'.format(BitArray(data)))
+            if self._sending_iframe:
+                # Write to send buffer in case retransmission requested
+                self.send_buf[self.send_seq] = data
+                self._incr_send_seq()
+                self._sending_iframe = False
+            else:  # s/h
+                # Store all frames for retransmission if REJ received
+                # Since s/h don't have unique send no, store under last iframe seq
+                self.send_buf[self.send_seq].append(data)
 
     async def send_message(self, message):
         """Feed a message to the sender coroutine."""
@@ -59,8 +76,8 @@ class SerialProtocol(asyncio.Protocol):
 
     async def send_iframe(self, message):
         """Send iframe and mark send_seq for incrementing after sending."""
+        self._sending_iframe = True
         await self.send_message(message)
-        self._incr_send_seq()
 
     def data_received(self, data):
         global csvfile
@@ -78,7 +95,8 @@ class SerialProtocol(asyncio.Protocol):
                 fr = Frame.make_frame(bytearr)
             except ValueError as e:  # Frame error
                 print(e)
-                # TODO: send rej frame
+                print('Requesting retransmission')
+                self._rej_iframe_ready.set()  # Send REJ frame
                 return
 
             if fr.SORT == Frame.Sort.H:
@@ -87,16 +105,18 @@ class SerialProtocol(asyncio.Protocol):
                     self._send_handshake_task.cancel()  # Stop sending handshake
                     self._ready.set()  # Enable sending messages
                     asyncio.ensure_future(self._ack_iframe())  # Enable acks
+                else:
+                    print('Handshake recv seq does not match handshake send seq')
 
             elif fr.SORT == Frame.Sort.I:
                 self._incr_recv_seq()
                 # One or more frames were lost
                 if fr.send_seq != self.recv_seq:
-                    print('Frame(s) {} missing'.format(
+                    print('Frame(s) {} missing. Requesting retransmission'.format(
                         [i for i in range(self.recv_seq, fr.send_seq)])
                     )
                     self._decr_recv_seq()
-                    # TODO: send rej frame
+                    self._rej_iframe_ready.set()  # Send REJ frame
                     return
 
                 print('Writing data to file')
@@ -107,21 +127,61 @@ class SerialProtocol(asyncio.Protocol):
                 print('Acknowledging I-frame')
                 self._ack_iframe_ready.set()
 
+            else:  # S-frame
+                print('Received S-frame')
+                if fr.TYPE == SFrame.Type.RR:
+                    self._secondary_ready.set()  # Let messages be sent
+                    # All frames up to recv_seq acked, del
+                    self._clear_send_buf(fr.recv_seq)
+                elif fr.TYPE == SFrame.Type.REJ:
+                    # Resend frames from fr.recv_seq upto send_seq
+                    # (send_seq incremented after last I send, do not include current send no.)
+                    for i in range(fr.recv_seq, self.send_seq):
+                        self.send_message(self.send_buf[i])  # Dont incr send seq again
+                elif fr.TYPE == SFrame.Type.RNR:
+                    self._secondary_ready.wait()  # Block sending new messages
+                    self._clear_send_buf(fr.recv_seq)
+
     def connection_lost(self, exc):
         print('Port closed')
         self.transport.loop.stop()
+
+    def _clear_send_buf(self, start):
+        for i in range(start):
+            del self.send_buf[i]
+        # Init to empty list if no elem exists
+        self.send_buf[self.send_seq] = (self.send_buf[self.send_seq]
+                                        if self.send_seq in self.send_buf
+                                        else [])
 
     async def _ack_iframe(self):
         """Send an S-frame with N(R) field set to (self.recv_seq + 1) mod 128.
         N(R) acknowledges that all frames with N(S) values up to N(R)−1 mod 128
         have been received and indicates the N(S) of the next frame it expects
         to receive.
+        Since data_received is synchronous, it cannot call an async function to
+        send messages. Therefore it insteads sets self._ack_iframe_ready to
+        trigger this function.
         """
         while True:
             await self._ack_iframe_ready.wait()
             sfr = SFrame((self.recv_seq + 1) & 0x7F, SFrame.Type.RR)
             await self.send_message(sfr.bytes)
             self._ack_iframe_ready.clear()
+
+    async def _rej_iframe(self):
+        """Send an S-frame with N(R) field set to self.recv_seq mod 128.
+        Requests immediate retransmission of all frames from N(R) onwards,
+        including S-frames sent after I-frame with N(S) >= N(R).
+        Since data_received is synchronous, it cannot call an async function to
+        send messages. Therefore it insteads sets self._rej_iframe_ready to
+        trigger this function.
+        """
+        while True:
+            await self._rej_iframe_ready.wait()
+            sfr = SFrame(self.recv_seq, SFrame.Type.REJ)
+            await self.send_message(sfr.bytes)
+            self._rej_iframe_ready.clear()
 
     def _incr_send_seq(self):
         """Increment send sequence number. Must be called after sending an
