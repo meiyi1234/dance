@@ -20,8 +20,6 @@ const byte NUM_GY521 = 3;                 // Number of sensors
 
 // Global variables below used for I-Frame, global since must keep in memory, a resend is possible.
 CircularBuffer<char*, 512> IFramesBuffer;
-double AcXRx, AcYRx, AcZRx, GyXRx, GyYRx, GyZRx;
-double voltRx, currentRx, powerRx, energyRx;
 byte numSend = 0;         // The current number of frame sent to RPi,         EXCLUDING H-Frame.
 byte numReceive = 0;      // The current number of frames received from RPi,  INCLUDING H-Frame.
 
@@ -312,12 +310,12 @@ void SendValues(void *pvParameters) {
             char iFrameMsg[50];
             byte i = 0;
             iFrameMsg[i++] = buf[3];
-            for (byte j = 4; buf[j] != STOP; j++) {
+            for (byte j = 4; buf[j + 2] != STOP; j++) { // since checksum is 2 bytes long, followed by STOP byte, stop when hit 1st checksum byte
               iFrameMsg[i++] = buf[j];
             }
-            iFrameMsg[i - 2] = '\0';  // terminate the string just after the info, discarding the checksum completely
-            Serial.print("The I-Frame Message is " ); Serial.println(iFrameMsg);
-            // if(iFrameMsg.equalsIgnoreCase("send me data")) {   // Intepret the message sent in I-Frame
+            iFrameMsg[i] = '\0';  // terminate the string properly
+            Serial.print("The I-Frame Message is: " ); Serial.println(iFrameMsg);
+            // if(iFrameMsg.equals("send me data")) {   // Intepret the message sent in I-Frame
             // Send S-Frame back to RPi
             Serial.println("I-Frame received! Sending S-Frame");
             Serial.write(START);
