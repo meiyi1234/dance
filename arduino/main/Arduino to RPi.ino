@@ -1,8 +1,6 @@
 // TO-DO: Settle case where the frames that need to be sent exceed over 128 (warps back to frame 0). E.g. Frame 127 - 128 & Frame 0.
 // TO-DO: Unable to test CircularBuffer since the data provided only happens once now. Not even sure if Task Scheduler works correctly w/o receiving constant flux of values.
 // TO-DO: Due to above, REJ S-Frame cannot be tested as well.
-// TO-DO: Checksum for I-Frame is not yet verified.
-// BUG: Receiving handshake a 2nd time causes the bytes to be received inappropriately after 2nd handshake is over.
 #include <CircularBuffer.h>
 #include <Arduino_FreeRTOS.h>
 #include <task.h>
@@ -16,16 +14,16 @@
 #define VOLT_DIVIDER  A0
 #define VOUT          A1
 
+unsigned long startTime;
 const byte MPU = 0x68;                    // I2C address of the MPU-6050
 const byte NUM_GY521 = 3;                 // Number of sensors
-byte sensor_loops;
-unsigned long startTime, currentTime, timeDelta;
 
 // Global variables below used for I-Frame, global since must keep in memory, a resend is possible.
-CircularBuffer<char*, 128> IFramesBuffer;
+CircularBuffer<char*, 512> IFramesBuffer;
 double AcXRx, AcYRx, AcZRx, GyXRx, GyYRx, GyZRx;
 double voltRx, currentRx, powerRx, energyRx;
-byte numSend = 0;
+byte numSend = 0;         // The current number of frame sent to RPi,         EXCLUDING H-Frame.
+byte numReceive = 0;      // The current number of frames received from RPi,  INCLUDING H-Frame.
 
 QueueHandle_t xQueue0;
 SemaphoreHandle_t UninterruptedReadSemaphore = NULL;  // Ensures ReadValues run properly without SendValues running
@@ -88,7 +86,7 @@ bool isFrameCorrect(byte* buf, char type) {
 void establishContact() {
   bool handshake = false;
   bool expectStopByte = false;
-  // msg[0] = START, msg[1] = receive_seq, msg[2] = frame, msg[3] = checkNum, msg[4] = checkNum, msg[5] = STOP
+  // msg[0] = START, msg[1] = numReceive, msg[2] = frame, msg[3] = checkNum, msg[4] = checkNum, msg[5] = STOP
   byte msg[6];
   byte i = -1;           // to fill buf
   while (!handshake) {
@@ -121,6 +119,7 @@ void establishContact() {
           //Serial.write(msg, i + 1);
           Serial.println("Success");
           handshake = true;
+          numReceive = 1;
 
           memset(msg, NULL, i + 1);
           i = -1;
@@ -137,91 +136,123 @@ void establishContact() {
   }
 }
 
-// Reads in the gyro & accel values
+// Reads in the gyro & accel values, packets it into an I-Frame and pushes it to CircularBuffer.
 void ReadValues(void *pvParameters) {
-  double AcX, AcY, AcZ, Tmp, GyX, GyY, GyZ;
-  double voltVal, currentVal, powerVal, energyVal;
+  unsigned long currentTime;
+  double AcX[3], AcY[3], AcZ[3], GyX[3], GyY[3], GyZ[3];
+  char AcXChar[5], AcYChar[5], AcZChar[5], GyXChar[5], GyYChar[5], GyZChar[5],
+       voltChar[6], currentChar[6], powerChar[6], energyChar[6];
+  char iframe[100];                                 // The full I-Frame to be sent
   prevWakeTimeRead = xTaskGetTickCount();
   while (true) {
     if (xSemaphoreTake(BlockReadSemaphore, 0) == pdTRUE) {
       if (xSemaphoreTake(UninterruptedReadSemaphore, 0) == pdTRUE) {
-        sensor_loops = 0;
-        while (sensor_loops < NUM_GY521) {
+        for (byte sensor_loops = 0; sensor_loops < NUM_GY521; sensor_loops++) {
           digitalWrite(PIN_SENSOR_1, HIGH);
           digitalWrite(PIN_SENSOR_2, HIGH);
           digitalWrite(PIN_SENSOR_3, HIGH);
           digitalWrite(PIN_SENSOR_1 + sensor_loops, LOW);
           Wire.beginTransmission(MPU);
-          Wire.write(0x3B);                     // starting with register 0x3B (ACCEL_XOUT_H)
+          Wire.write(0x3B);                             // starting with register 0x3B (ACCEL_XOUT_H)
           Wire.endTransmission(false);
-          Wire.requestFrom(MPU, 14, true);      // request a total of 14 registers
-          AcX = Wire.read() << 8 | Wire.read(); // 0x3B (ACCEL_XOUT_H) & 0x3C (ACCEL_XOUT_L)
-          AcY = Wire.read() << 8 | Wire.read(); // 0x3D (ACCEL_YOUT_H) & 0x3E (ACCEL_YOUT_L)
-          AcZ = Wire.read() << 8 | Wire.read(); // 0x3F (ACCEL_ZOUT_H) & 0x40 (ACCEL_ZOUT_L)
-          Tmp = Wire.read() << 8 | Wire.read(); // 0x41 (TEMP_OUT_H) & 0x42 (TEMP_OUT_L) - Unnecessary
-          GyX = Wire.read() << 8 | Wire.read(); // 0x43 (GYRO_XOUT_H) & 0x44 (GYRO_XOUT_L)
-          GyY = Wire.read() << 8 | Wire.read(); // 0x45 (GYRO_YOUT_H) & 0x46 (GYRO_YOUT_L)
-          GyZ = Wire.read() << 8 | Wire.read(); // 0x47 (GYRO_ZOUT_H) & 0x48 (GYRO_ZOUT_L)
+          Wire.requestFrom(MPU, 14, true);              // request a total of 14 registers
+          AcX[sensor_loops] = Wire.read() << 8 | Wire.read();  // 0x3B (ACCEL_XOUT_H) & 0x3C (ACCEL_XOUT_L)
+          AcY[sensor_loops] = Wire.read() << 8 | Wire.read();  // 0x3D (ACCEL_YOUT_H) & 0x3E (ACCEL_YOUT_L)
+          AcZ[sensor_loops] = Wire.read() << 8 | Wire.read();  // 0x3F (ACCEL_ZOUT_H) & 0x40 (ACCEL_ZOUT_L)
+          Wire.read() << 8 | Wire.read();               // 0x41 (TEMP_OUT_H) & 0x42 (TEMP_OUT_L) - For temperature, UNNECESSARY
+          GyX[sensor_loops] = Wire.read() << 8 | Wire.read();  // 0x43 (GYRO_XOUT_H) & 0x44 (GYRO_XOUT_L)
+          GyY[sensor_loops] = Wire.read() << 8 | Wire.read();  // 0x45 (GYRO_YOUT_H) & 0x46 (GYRO_YOUT_L)
+          GyZ[sensor_loops] = Wire.read() << 8 | Wire.read();  // 0x47 (GYRO_ZOUT_H) & 0x48 (GYRO_ZOUT_L)
           Wire.endTransmission(true);
-          AcX = AcY = AcZ = GyX = GyY = GyZ = voltVal = currentVal = powerVal = energyVal = 7897;
+          AcX[sensor_loops] = AcY[sensor_loops] = AcZ[sensor_loops] = GyX[sensor_loops] = GyY[sensor_loops] = GyZ[sensor_loops] = 6875 + 10 * sensor_loops; // Dummy data, REMOVE
           Serial.print(sensor_loops); Serial.print(" | ");
-          Serial.print("AcX = "); Serial.print(AcX);
-          Serial.print(" | AcY = "); Serial.print(AcY);
-          Serial.print(" | AcZ = "); Serial.print(AcZ);
+          Serial.print("AcX = "); Serial.print(AcX[sensor_loops]);
+          Serial.print(" | AcY = "); Serial.print(AcY[sensor_loops]);
+          Serial.print(" | AcZ = "); Serial.print(AcZ[sensor_loops]);
           // Serial.print(" | Tmp = "); Serial.print(Tmp / 340.00 + 36.53);  //equation for temperature in degrees C from datasheet
-          Serial.print(" | GyX = "); Serial.print(GyX);
-          Serial.print(" | GyY = "); Serial.print(GyY);
-          Serial.print(" | GyZ = "); Serial.println(GyZ);
-          sensor_loops++;
+          Serial.print(" | GyX = "); Serial.print(GyX[sensor_loops]);
+          Serial.print(" | GyY = "); Serial.print(GyY[sensor_loops]);
+          Serial.print(" | GyZ = "); Serial.println(GyZ[sensor_loops]);
         }
         currentTime = millis();
-        int voltMeasurement = analogRead(A0);
-        int currentMeasurement = analogRead(A1);
-        timeDelta = currentTime - startTime;
-        double voltVal = (double) voltMeasurement * 5 * 2 / 1023.0;                      // Volt, voltage divider halves voltage
-        double currentVout = (double) currentMeasurement * 5 / 1023.0;                   // INA169 Vout
-        double currentVal = (currentVout * 1000.0) * 1000.0 / (10 * 10000.0);            // mA, Rs = 10 Ohms Rl = 10k Ohms
-        double powerVal = voltVal * currentVal;                                          // mW
-        double energyVal = energyVal + ((powerVal / 1000) * ((double) timeDelta / 1000));// Joules
-        AcX = AcY = AcZ = GyX = GyY = GyZ = voltVal = currentVal = powerVal = energyVal = 7897;
+        int voltMeasurement = analogRead(VOLT_DIVIDER);
+        int currentMeasurement = analogRead(VOUT);
+        double voltVal = (double) voltMeasurement * 5 * 2 / 1023.0;                                         // Volt, voltage divider halves voltage
+        double currentVout = (double) currentMeasurement * 5 / 1023.0;                                      // INA169 Vout
+        double currentVal = (currentVout * 1000.0) * 1000.0 / (10 * 10000.0);                               // mA, Rs = 10 Ohms Rl = 10k Ohms
+        double powerVal = voltVal * currentVal;                                                             // mW
+        double energyVal = energyVal + ((powerVal / 1000) * ( ((double)(currentTime - startTime)) / 1000)); // Joules
         Serial.print("Voltage(V) = "); Serial.print(voltVal);
         Serial.print(" | Current(mA) = "); Serial.print(currentVal);
         Serial.print(" | Power(mW) = "); Serial.print(powerVal);
         Serial.print(" | Energy(J) = "); Serial.println(energyVal);
         startTime = currentTime;
 
-        xQueueSendToBack(xQueue0, &AcX, 0);
-        xQueueSendToBack(xQueue0, &AcY, 0);
-        xQueueSendToBack(xQueue0, &AcZ, 0);
-        xQueueSendToBack(xQueue0, &GyX, 0);
-        xQueueSendToBack(xQueue0, &GyY, 0);
-        xQueueSendToBack(xQueue0, &GyZ, 0);
-        xQueueSendToBack(xQueue0, &voltVal, 0);
-        xQueueSendToBack(xQueue0, &currentVal, 0);
-        xQueueSendToBack(xQueue0, &powerVal, 0);
-        xQueueSendToBack(xQueue0, &energyVal, 0);
-
-        vTaskDelayUntil(&prevWakeTimeRead, (4 / portTICK_PERIOD_MS));
-        xSemaphoreGive(UninterruptedReadSemaphore);
+        iframe[0] = numReceive << 1 | 0b1;
+        iframe[1] = numSend << 1 | 0b1;   // prevents iframe[1] to be recognized as terminating string character '\0' or 0x00.
+        iframe[2] = '\0';                 // to allow strcat to work properly
+        // dtostrf(floatvar, StringLengthIncDecimalPoint, numVarsAfterDecimal, charbuf);
+        for (byte sensor_loops = 0; sensor_loops < NUM_GY521; sensor_loops++) {
+          dtostrf(AcX[sensor_loops], 0, 0, AcXChar);      // convert double to char[] with no dp, effectively making it int.
+          strcat(iframe, AcXChar);
+          strcat(iframe, ",");
+          memset(AcXChar, NULL, 5);
+          dtostrf(AcY[sensor_loops], 0, 0, AcYChar);      // convert double to char[] with no dp, effectively making it int.
+          strcat(iframe, AcYChar);
+          strcat(iframe, ",");
+          memset(AcYChar, NULL, 5);
+          dtostrf(AcZ[sensor_loops], 0, 0, AcZChar);      // convert double to char[] with no dp, effectively making it int.
+          strcat(iframe, AcZChar);
+          strcat(iframe, ",");
+          memset(AcZChar, NULL, 5);
+          dtostrf(GyX[sensor_loops], 0, 0, GyXChar);      // convert double to char[] with no dp, effectively making it int.
+          strcat(iframe, GyXChar);
+          strcat(iframe, ",");
+          memset(GyXChar, NULL, 5);
+          dtostrf(GyY[sensor_loops], 0, 0, GyYChar);      // convert double to char[] with no dp, effectively making it int.
+          strcat(iframe, GyYChar);
+          strcat(iframe, ",");
+          memset(GyYChar, NULL, 5);
+          dtostrf(GyZ[sensor_loops], 0, 0, GyZChar);      // convert double to char[] with no dp, effectively making it int.
+          strcat(iframe, GyZChar);
+          strcat(iframe, ",");
+          memset(GyZChar, NULL, 5);
+        }
+        dtostrf(voltVal, 0, 2, voltChar);      // convert double to char[] with 2dp.
+        strcat(iframe, voltChar);
+        strcat(iframe, ",");
+        dtostrf(currentVal, 0, 2, currentChar);// convert double to char[] with 2dp.
+        strcat(iframe, currentChar);
+        strcat(iframe, ",");
+        dtostrf(powerVal, 0, 2, powerChar);    // convert double to char[] with 2dp.
+        strcat(iframe, powerChar);
+        strcat(iframe, ",");
+        dtostrf(energyVal, 0, 2, energyChar);  // convert double to char[] with 2dp.
+        strcat(iframe, energyChar);
+        Serial.print("Current IFrame before checksum is "); Serial.println(iframe);
+        int len = strlen(iframe);
+        Serial.print("Length of I-Frame is "); Serial.println(len);
+        iframe[1] &= 0xFE;  // Converts bit[0] back to the original intended 0 for checksum calculation.
+        int checksum = crc16(&iframe[0], len);
+        iframe[1] |= 0b1;   // Converts bit[0] to 1 again for complete string storage purposes.
+        iframe[len++] = checksum >> 8;
+        iframe[len] = checksum & 0xFF;
+        Serial.print("Checksum is "); Serial.println(checksum);
+        Serial.print("Complete IFrame is "); Serial.println(iframe);  // Why is there an elusive character 'E' behind the checksum??
+        IFramesBuffer.push(iframe);       // store the I-Frame into the circular buffer.
       }
     }
+    vTaskDelayUntil(&prevWakeTimeRead, (4 / portTICK_PERIOD_MS));
+    xSemaphoreGive(UninterruptedReadSemaphore);
   }
 }
 
 // Reads the accelerometer and gyroscope values from the Queue
 // Checks for an S-Frame so that Arduino knows that it is ok to send data
 void SendValues(void *pvParameters) {
-  byte buf[50];               // buf[0] = START, buf[1] = receive_seq, buf[2] = frame, buf[3] = checkNum, buf[4] = checkNum, buf[5] = STOP
+  byte buf[50];               // buf[0] = START, buf[1] = numReceive, buf[2] = frame, buf[3] = checkNum, buf[4] = checkNum, buf[5] = STOP
   bool expectStopByte = false;// Signal when a START byte has occured, so that the next such byte is a STOP byte.
   byte i = -1;                // used to fill buf
-  byte receive_seq;           // Read receive sequence number from RPi to compare with numSend
-  double AcXRx, AcYRx, AcZRx, GyXRx, GyYRx, GyZRx;// Reads only one set of Gyro & Accel from the Queue at one time,
-  // next cycle takes in the next set of readings from another sensor. 16 bits long.
-  char AcXChar[5], AcYChar[5], AcZChar[5], GyXChar[5], GyYChar[5], GyZChar[5],
-       voltChar[6], currentChar[6], powerChar[6], energyChar[6],
-       startChar[2], control1Char[4], control2Char[4], checksumChar[6], stopChar[2];
-  double voltRx, currentRx, powerRx, energyRx;
-  char iframe[100];                                 // The full I-Frame to be sent
 
   prevWakeTimeSend = xTaskGetTickCount();
   while (true) {
@@ -229,7 +260,7 @@ void SendValues(void *pvParameters) {
       if (Serial.available() > 0) {
         buf[++i] = Serial.read();
         if (i == 0 && buf[i] != START) {    // if expecting starting byte but receive otherwise
-          Serial.print("Error, Frame does not start with 0x7e");
+          Serial.println("Error, Frame does not start with 0x7e");
           i = -1;
           expectStopByte = false;
           memset(buf, NULL, 1);
@@ -240,94 +271,53 @@ void SendValues(void *pvParameters) {
         else if (buf[i] == STOP && expectStopByte) {  // STOP byte is received, terminate the frame
           Serial.println("Frame terminated");
           if (buf[2] == final2Bits_HFrame && isFrameCorrect(&buf[0], 'H')) {  // is a H-Frame, verify its correct
-            Serial.println("H-Frame received, expecting another H-frame to handshake again");
-            establishContact();
-            vTaskDelayUntil(&prevWakeTimeSend, (2 / portTICK_PERIOD_MS));
-            xSemaphoreGive(BlockReadSemaphore);
-            xSemaphoreGive(UninterruptedReadSemaphore);
+            Serial.print("Returning bytes: ");
+            Serial.write(buf, i + 1);
+            Serial.println("");
+            //Serial.write(msg, i + 1);
+            Serial.println("Success");
           }
           else if ( ( (buf[2] & 0b11) == final2Bits_SFrame) && isFrameCorrect(&buf[0], 'S') ) { // is an S-Frame, verify its correct
             // Check whether need to resend data
             // Trim to only frame[3:2]]. If true, RPi rejected the frame sent by Arduino, must resend
-            receive_seq = (int)(buf[1] >> 1);
+            numReceive = buf[1] >> 1;
             if ((buf[2] >> 2 & 0b11) == SFRAME_REJ) {
-              receive_seq = buf[1] >> 1;
-              Serial.print("RPi has not received all frames, resending frames "); Serial.print(receive_seq); Serial.print(" to "); Serial.println(numSend);
-              for (int i = receive_seq; i <= numSend; i++) {
+              Serial.print("RPi has not received all frames, resending frames "); Serial.print(numReceive); Serial.print(" to "); Serial.println(numSend);
+              for (int i = numReceive; i <= numSend; i++) {
+                Serial.write(START);
                 int len = strlen(IFramesBuffer[i]);
-                for (int j = 0; j < len; j++) {
+                Serial.write(IFramesBuffer[i][0]);
+                Serial.write(IFramesBuffer[i][1] & 0xFE); // Changes the bit[0] from 1 back to 0
+                for (int j = 2; j < len - 1; j++) {
                   Serial.write(IFramesBuffer[i][j]);
                 }
+                Serial.write(STOP);
                 Serial.print("Frame number "); Serial.print(i); Serial.print(" = "); Serial.write(IFramesBuffer[i]);
               }
             }
             else if ((buf[2] >> 2 & 0b11) == SFRAME_RR) {
-              receive_seq = buf[1] >> 1;
-              Serial.print("RPi ready to receive frame number "); Serial.println(receive_seq);
-              xQueueReceive(xQueue0, &AcXRx, 0);
-              xQueueReceive(xQueue0, &AcYRx, 0);
-              xQueueReceive(xQueue0, &AcZRx, 0);
-              xQueueReceive(xQueue0, &GyXRx, 0);
-              xQueueReceive(xQueue0, &GyYRx, 0);
-              xQueueReceive(xQueue0, &GyZRx, 0);
-              xQueueReceive(xQueue0, &voltRx, 0);
-              xQueueReceive(xQueue0, &currentRx, 0);
-              xQueueReceive(xQueue0, &powerRx, 0);
-              xQueueReceive(xQueue0, &energyRx, 0);
-              Serial.println("Receive from Queue");
-              itoa(START, startChar, 16);                       // convert the START byte into char[], therefore containing "7e"
-              strcpy(iframe, startChar);
-              itoa((receive_seq << 1 | 0b1), control1Char, 16); // 1 byte only therefore only containing one char
-              strcat(iframe, control1Char);
-              itoa((numSend << 1), control2Char, 16);           // 1 byte only therefore only containing one char
-              strcat(iframe, control2Char);
-              // dtostrf(floatvar, StringLengthIncDecimalPoint, numVarsAfterDecimal, charbuf);
-              dtostrf(AcXRx, 0, 0, AcXChar);      // convert double to char[] with no dp, effectively making it int.
-              strcat(iframe, AcXChar);
-              strcat(iframe, ",");
-              dtostrf(AcYRx, 0, 0, AcYChar);      // convert double to char[] with no dp, effectively making it int.
-              strcat(iframe, AcYChar);
-              strcat(iframe, ",");
-              dtostrf(AcZRx, 0, 0, AcZChar);      // convert double to char[] with no dp, effectively making it int.
-              strcat(iframe, AcZChar);
-              strcat(iframe, ",");
-              dtostrf(GyXRx, 0, 0, GyXChar);      // convert double to char[] with no dp, effectively making it int.
-              strcat(iframe, GyXChar);
-              strcat(iframe, ",");
-              dtostrf(GyYRx, 0, 0, GyYChar);      // convert double to char[] with no dp, effectively making it int.
-              strcat(iframe, GyYChar);
-              strcat(iframe, ",");
-              dtostrf(GyZRx, 0, 0, GyZChar);      // convert double to char[] with no dp, effectively making it int.
-              strcat(iframe, GyZChar);
-              strcat(iframe, ",");
-              dtostrf(voltRx, 0, 2, voltChar);      // convert double to char[] with 2dp.
-              strcat(iframe, voltChar);
-              strcat(iframe, ",");
-              dtostrf(currentRx, 0, 2, currentChar);// convert double to char[] with 2dp.
-              strcat(iframe, currentChar);
-              strcat(iframe, ",");
-              dtostrf(powerRx, 0, 2, powerChar);    // convert double to char[] with 2dp.
-              strcat(iframe, powerChar);
-              strcat(iframe, ",");
-              dtostrf(energyRx, 0, 2, energyChar);  // convert double to char[] with 2dp.
-              strcat(iframe, energyChar);
-              Serial.print("Current IFrame before checksum is "); Serial.println(iframe);
-
-              int checksum = crc16(&iframe[2], sizeof(iframe) / sizeof(iframe[0]) - 2);
-              itoa(checksum, checksumChar, 10);
-              strcat(iframe, checksumChar);
-              itoa(STOP, stopChar, 16);   // convert the STOP byte into char[], therefore containing "7e"
-              strcat(iframe, stopChar);
-              Serial.print("Current complete IFrame is "); Serial.println(iframe);
-              IFramesBuffer.push(iframe);       // store the I-Frame into the circular buffer.
-              numSend++;
-              int len = strlen(iframe);
-              for (int i = 0; i < len; i++) {
-                Serial.write(iframe[i]);
+              Serial.print("RPi ready to receive frame number "); Serial.println(numReceive);
+              Serial.write(START);
+              int len = strlen(IFramesBuffer[numReceive]);
+              Serial.write(IFramesBuffer[numReceive][0]);
+              Serial.write(IFramesBuffer[numReceive][1] & 0xFE); // Changes the bit[0] from 1 back to 0
+              for (int j = 2; j < len - 1; j++) {
+                Serial.write(IFramesBuffer[numReceive][j]);
               }
+              Serial.write(STOP);
+              numSend++;
             }
           }
           else if ( ( (buf[1] & 0b1) == 0b1) && ( (buf[2] & 0b1) == 0b0) && isFrameCorrect(&buf[0], 'I') ) { // is an I-Frame, verify its correct
+            char iFrameMsg[50];
+            byte i = 0;
+            iFrameMsg[i++] = buf[3];
+            for (byte j = 4; buf[j] != STOP; j++) {
+              iFrameMsg[i++] = buf[j];
+            }
+            iFrameMsg[i - 2] = '\0';  // terminate the string just after the info, discarding the checksum completely
+            Serial.print("The I-Frame Message is " ); Serial.println(iFrameMsg);
+            // if(iFrameMsg.equalsIgnoreCase("send me data")) {   // Intepret the message sent in I-Frame
             // Send S-Frame back to RPi
             Serial.println("I-Frame received! Sending S-Frame");
             Serial.write(START);
@@ -358,8 +348,7 @@ void setup() {
   pinMode(PIN_SENSOR_3, OUTPUT);
   pinMode(VOLT_DIVIDER, INPUT); // Voltage Divider output
   pinMode(VOUT, INPUT); // INA169 VOut
-  sensor_loops = 0;
-  while (sensor_loops < NUM_GY521) {
+  for (byte sensor_loops = 0; sensor_loops < NUM_GY521; sensor_loops++) {
     digitalWrite(PIN_SENSOR_1, HIGH);
     digitalWrite(PIN_SENSOR_2, HIGH);
     digitalWrite(PIN_SENSOR_3, HIGH);
@@ -377,7 +366,6 @@ void setup() {
     Wire.write(0x1B); // GYRO_CONFIG register
     Wire.write(16); // FS_SEL 10: 1000 degrees per second
     Wire.endTransmission(true);
-    sensor_loops++;
   }
   startTime = millis();
 
@@ -394,6 +382,7 @@ void setup() {
   xSemaphoreGive(BlockReadSemaphore);
   xTaskCreate(ReadValues, "ReadValues", 2000, NULL, 2, NULL);
   xTaskCreate(SendValues, "SendValues", 2500, NULL, 2, NULL);
+  Serial.println("Starting Task Scheduler");
   vTaskStartScheduler();
 }
 
