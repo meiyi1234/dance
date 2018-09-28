@@ -1,4 +1,4 @@
-// TO-DO: Settle case where the frames that need to be sent exceed over 128 (warps back to frame 0). E.g. Frame 127 - 128 & Frame 0.
+// TO-DO: Settle case where the frames that need to be sent exceed over 256 (warps back to frame 0). E.g. Frame 254 - 255 & Frame 0.
 // TO-DO: Unable to test CircularBuffer since the data provided only happens once now. Not even sure if Task Scheduler works correctly w/o receiving constant flux of values.
 // TO-DO: Due to above, REJ S-Frame cannot be tested as well.
 #include <CircularBuffer.h>
@@ -19,7 +19,7 @@ const byte MPU = 0x68;                    // I2C address of the MPU-6050
 const byte NUM_GY521 = 3;                 // Number of sensors
 
 // Global variables below used for I-Frame, global since must keep in memory, a resend is possible.
-CircularBuffer<char*, 512> IFramesBuffer;
+CircularBuffer<char*, 256> IFramesBuffer;
 byte numSend = 0;         // The current number of frame sent to RPi,         EXCLUDING H-Frame.
 byte numReceive = 0;      // The current number of frames received from RPi,  INCLUDING H-Frame.
 
@@ -65,19 +65,19 @@ bool isFrameCorrect(byte* buf, char type) {
   }
   len++;                                  // include STOP byte as part of len
 
-  // Checks control_byte1
+  // Checks control_byte2
   byte check;
   bool isFrameCorrect;
   if (type == 'H')      check = final2Bits_HFrame;
   else if (type == 'S') check = final2Bits_SFrame;
 
-  if (type == 'I')  isFrameCorrect = (buf[2] == 0x00 || buf[2] == 0x02);
-  else              isFrameCorrect = (buf[2] == check);
+  if (type == 'I')  isFrameCorrect = !(buf[2] & 0b1);             // checks whether bit[0] == 0;
+  else              isFrameCorrect = ( (buf[2] & 0b11) == check);
   //
 
   int checkNum = buf[len - 3] << 8 | buf[len - 2];
-  Serial.print("Calc checksum is "); Serial.print(crc16(&buf[1], len - 4)); Serial.print(" vs input checksum is "); Serial.println(checkNum);
-  return isFrameCorrect && crc16(&buf[1], len - 4) == checkNum && buf[len - 1] == STOP;
+  //Serial.print("Calc checksum is "); Serial.print(crc16(&buf[1], len - 4)); Serial.print(" vs input checksum is "); Serial.println(checkNum);
+  return (buf[1] & 0b1) && isFrameCorrect && crc16(&buf[1], len - 4) == checkNum && buf[len - 1] == STOP;
 }
 
 // Handshake between Arduino and RPi
@@ -279,7 +279,7 @@ void SendValues(void *pvParameters) {
             // Check whether need to resend data
             // Trim to only frame[3:2]]. If true, RPi rejected the frame sent by Arduino, must resend
             numReceive = buf[1] >> 1;
-            if ((buf[2] >> 2 & 0b11) == SFRAME_REJ) {
+            if ( ( (buf[2] >> 2) & 0b11) == SFRAME_REJ) {
               Serial.print("RPi has not received all frames, resending frames "); Serial.print(numReceive); Serial.print(" to "); Serial.println(numSend);
               for (int i = numReceive; i <= numSend; i++) {
                 Serial.write(START);
@@ -293,7 +293,7 @@ void SendValues(void *pvParameters) {
                 Serial.print("Frame number "); Serial.print(i); Serial.print(" = "); Serial.write(IFramesBuffer[i]);
               }
             }
-            else if ((buf[2] >> 2 & 0b11) == SFRAME_RR) {
+            else if ( ( (buf[2] >> 2) & 0b11) == SFRAME_RR) {
               Serial.print("RPi ready to receive frame number "); Serial.println(numReceive);
               Serial.write(START);
               int len = strlen(IFramesBuffer[numReceive]);
