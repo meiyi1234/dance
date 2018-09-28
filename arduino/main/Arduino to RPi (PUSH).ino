@@ -28,7 +28,7 @@ SemaphoreHandle_t BlockReadSemaphore = NULL;          // Stops ReadValues from c
 TickType_t prevWakeTimeRead;
 TickType_t prevWakeTimeSend;
 
-const TickType_t READ_FREQUENCY = 1000;   // runs the task ReadValues every READ_FREQUENCY ms
+const TickType_t READ_FREQUENCY = 10;   // runs the task ReadValues every READ_FREQUENCY ms
 const byte START = 0x7e;
 const byte STOP = 0x7e;
 const byte final2Bits_HFrame = 0x03;
@@ -132,6 +132,18 @@ void establishContact() {
       delay(10);
     }
   }
+}
+
+void sendIFrame(int i) {
+  Serial.write(START);
+  int len = strlen(IFramesBuffer[i]);
+  Serial.write(IFramesBuffer[i][0]);
+  Serial.write(IFramesBuffer[i][1] & 0xFE); // Changes the bit[0] from 1 back to 0
+  for (int j = 2; j < len; j++) {
+    Serial.write(IFramesBuffer[i][j]);
+  }
+  Serial.write(STOP);
+  Serial.print("Frame number "); Serial.print(i); Serial.print(" = "); Serial.write(IFramesBuffer[i]);
 }
 
 // Reads in the gyro & accel values, packets it into an I-Frame and pushes it to CircularBuffer.
@@ -280,29 +292,24 @@ void SendValues(void *pvParameters) {
             numReceive = buf[1] >> 1;
             if ( ( (buf[2] >> 2) & 0b11) == SFRAME_REJ) {
               Serial.print("RPi has not received all frames, resending frames "); Serial.print(numReceive); Serial.print(" to "); Serial.println(numSend);
-              for (int i = numReceive; i <= numSend; i++) {
-                Serial.write(START);
-                int len = strlen(IFramesBuffer[i]);
-                Serial.write(IFramesBuffer[i][0]);
-                Serial.write(IFramesBuffer[i][1] & 0xFE); // Changes the bit[0] from 1 back to 0
-                for (int j = 2; j < len - 1; j++) {
-                  Serial.write(IFramesBuffer[i][j]);
+              if (numReceive > numSend) {   // frame number has exceeded 128
+                for (int i = numReceive; i <= 127; i++) {
+                  sendIFrame(i);
                 }
-                Serial.write(STOP);
-                Serial.print("Frame number "); Serial.print(i); Serial.print(" = "); Serial.write(IFramesBuffer[i]);
+                for (int i = 0; i <= numSend; i++) {
+                  sendIFrame(i);
+                }
+              }
+              else {
+                for (int i = numReceive; i <= numSend; i++) {
+                  sendIFrame(i);
+                }
               }
             }
             else if ( ( (buf[2] >> 2) & 0b11) == SFRAME_RR) {
               Serial.print("RPi ready to receive frame number "); Serial.println(numReceive);
-              Serial.write(START);
-              int len = strlen(IFramesBuffer[numReceive]);
-              Serial.write(IFramesBuffer[numReceive][0]);
-              Serial.write(IFramesBuffer[numReceive][1] & 0xFE); // Changes the bit[0] from 1 back to 0
-              for (int j = 2; j < len - 1; j++) {
-                Serial.write(IFramesBuffer[numReceive][j]);
-              }
-              Serial.write(STOP);
-              numSend++;
+              sendIFrame(numReceive);
+              numSend = (numSend + 1) & 0x7F;                   // Keeps send sequence no within 0-127
             }
           }
           else if ( ( (buf[1] & 0b1) == 0b1) && ( (buf[2] & 0b1) == 0b0) && isFrameCorrect(&buf[0], 'I') ) { // is an I-Frame, verify its correct
@@ -376,7 +383,7 @@ void setup() {
   BlockReadSemaphore = xSemaphoreCreateBinary();
   xSemaphoreGive(UninterruptedReadSemaphore);
   xSemaphoreGive(BlockReadSemaphore);
-  xTaskCreate(ReadValues, "ReadValues", 2000, NULL, 2, NULL);
+  xTaskCreate(ReadValues, "ReadValues", 2000, NULL, 3, NULL);
   xTaskCreate(SendValues, "SendValues", 2500, NULL, 2, NULL);
   Serial.println("Starting Task Scheduler");
   vTaskStartScheduler();
