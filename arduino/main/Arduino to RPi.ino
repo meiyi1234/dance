@@ -23,12 +23,12 @@ CircularBuffer<char*, 256> IFramesBuffer;
 byte numSend = 0;         // The current number of frame sent to RPi,         EXCLUDING H-Frame.
 byte numReceive = 0;      // The current number of frames received from RPi,  INCLUDING H-Frame.
 
-QueueHandle_t xQueue0;
 SemaphoreHandle_t UninterruptedReadSemaphore = NULL;  // Ensures ReadValues run properly without SendValues running
 SemaphoreHandle_t BlockReadSemaphore = NULL;          // Stops ReadValues from continuously running
 TickType_t prevWakeTimeRead;
 TickType_t prevWakeTimeSend;
 
+const TickType_t READ_FREQUENCY = 1000;   // runs the task ReadValues every READ_FREQUENCY ms
 const byte START = 0x7e;
 const byte STOP = 0x7e;
 const byte final2Bits_HFrame = 0x03;
@@ -235,12 +235,11 @@ void ReadValues(void *pvParameters) {
         iframe[1] |= 0b1;   // Converts bit[0] to 1 again for complete string storage purposes.
         iframe[len++] = checksum >> 8;
         iframe[len] = checksum & 0xFF;
-        Serial.print("Checksum is "); Serial.println(checksum);
         Serial.print("Complete IFrame is "); Serial.println(iframe);  // Why is there an elusive character 'E' behind the checksum??
         IFramesBuffer.push(iframe);       // store the I-Frame into the circular buffer.
       }
     }
-    vTaskDelayUntil(&prevWakeTimeRead, (4 / portTICK_PERIOD_MS));
+    vTaskDelayUntil(&prevWakeTimeRead, READ_FREQUENCY);
     xSemaphoreGive(UninterruptedReadSemaphore);
   }
 }
@@ -375,7 +374,6 @@ void setup() {
   Serial.println("Finish contact");
   UninterruptedReadSemaphore = xSemaphoreCreateMutex();
   BlockReadSemaphore = xSemaphoreCreateBinary();
-  xQueue0 = xQueueCreate(36, sizeof(double));
   xSemaphoreGive(UninterruptedReadSemaphore);
   xSemaphoreGive(BlockReadSemaphore);
   xTaskCreate(ReadValues, "ReadValues", 2000, NULL, 2, NULL);
