@@ -148,7 +148,7 @@ void sendIFrame(byte i) {
 // Reads in the gyro & accel values, packets it into an I-Frame and pushes it to CircularBuffer.
 void ReadValues(void *pvParameters) {
   unsigned long currentTime;
-  double AcX[3], AcY[3], AcZ[3], GyX[3], GyY[3], GyZ[3];
+  int AcX[3], AcY[3], AcZ[3], GyX[3], GyY[3], GyZ[3];
   char AcXChar[5], AcYChar[5], AcZChar[5], GyXChar[5], GyYChar[5], GyZChar[5],
        voltChar[6], currentChar[6], powerChar[6], energyChar[6];
   prevWakeTimeRead = xTaskGetTickCount();
@@ -200,27 +200,27 @@ void ReadValues(void *pvParameters) {
       IFramesBuffer[index][2] = '\0';                 // to allow strcat to work properly
       // dtostrf(floatvar, StringLengthIncDecimalPoint, numVarsAfterDecimal, charbuf);
       for (byte sensor_loops = 0; sensor_loops < NUM_GY521; sensor_loops++) {
-        dtostrf(AcX[sensor_loops], 0, 0, AcXChar);      // convert double to char[] with no dp, effectively making it int.
+        itoa(AcX[sensor_loops], AcXChar, 10);      // convert int to char[]
         strcat(IFramesBuffer[index], AcXChar);
         strcat(IFramesBuffer[index], ",");
         memset(AcXChar, NULL, 5);
-        dtostrf(AcY[sensor_loops], 0, 0, AcYChar);      // convert double to char[] with no dp, effectively making it int.
+        itoa(AcY[sensor_loops], AcYChar, 10);      // convert int to char[]
         strcat(IFramesBuffer[index], AcYChar);
         strcat(IFramesBuffer[index], ",");
         memset(AcYChar, NULL, 5);
-        dtostrf(AcZ[sensor_loops], 0, 0, AcZChar);      // convert double to char[] with no dp, effectively making it int.
+        itoa(AcZ[sensor_loops], AcZChar, 10);      // convert int to char[]
         strcat(IFramesBuffer[index], AcZChar);
         strcat(IFramesBuffer[index], ",");
         memset(AcZChar, NULL, 5);
-        dtostrf(GyX[sensor_loops], 0, 0, GyXChar);      // convert double to char[] with no dp, effectively making it int.
+        itoa(GyX[sensor_loops], GyXChar, 10);      // convert int to char[]
         strcat(IFramesBuffer[index], GyXChar);
         strcat(IFramesBuffer[index], ",");
         memset(GyXChar, NULL, 5);
-        dtostrf(GyY[sensor_loops], 0, 0, GyYChar);      // convert double to char[] with no dp, effectively making it int.
+        itoa(GyY[sensor_loops], GyYChar, 10);      // convert int to char[]
         strcat(IFramesBuffer[index], GyYChar);
         strcat(IFramesBuffer[index], ",");
         memset(GyYChar, NULL, 5);
-        dtostrf(GyZ[sensor_loops], 0, 0, GyZChar);      // convert double to char[] with no dp, effectively making it int.
+        itoa(GyZ[sensor_loops], GyZChar, 10);      // convert int to char[]
         strcat(IFramesBuffer[index], GyZChar);
         strcat(IFramesBuffer[index], ",");
         memset(GyZChar, NULL, 5);
@@ -254,10 +254,9 @@ void ReadValues(void *pvParameters) {
       Serial.print("IFramesBuffer[frameNum] is: "); Serial.write(IFramesBuffer[frameNum]);
       frameNum = (frameNum + 1) & 0x7F; // keeps the range of frameNum between 0 - 127
       index = (index + 1) & 0xF;
-      delay(100);
-      xSemaphoreGive(UninterruptedReadSemaphore);
-      vTaskDelayUntil(&prevWakeTimeRead, READ_FREQUENCY);
     }
+    xSemaphoreGive(UninterruptedReadSemaphore);
+    vTaskDelayUntil(&prevWakeTimeRead, READ_FREQUENCY);
   }
 }
 
@@ -347,7 +346,6 @@ void SendValues(void *pvParameters) {
         }
         else  Serial.print("byte is "); Serial.write(buf[i]); Serial.println("");
       }
-      delay(50);
       xSemaphoreGive(UninterruptedReadSemaphore);
       vTaskDelayUntil(&prevWakeTimeSend, SEND_FREQUENCY);
     }
