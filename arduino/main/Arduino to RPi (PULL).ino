@@ -254,9 +254,10 @@ void ReadValues(void *pvParameters) {
       Serial.print("IFramesBuffer[frameNum] is: "); Serial.write(IFramesBuffer[frameNum]);
       frameNum = (frameNum + 1) & 0x7F; // keeps the range of frameNum between 0 - 127
       index = (index + 1) & 0xF;
+
+      xSemaphoreGive(UninterruptedReadSemaphore);
+      vTaskDelayUntil(&prevWakeTimeRead, READ_FREQUENCY);
     }
-    xSemaphoreGive(UninterruptedReadSemaphore);
-    vTaskDelayUntil(&prevWakeTimeRead, READ_FREQUENCY);
   }
 }
 
