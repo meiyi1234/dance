@@ -1,4 +1,5 @@
 // BUG: The Arduino starts outputting garbage after running for a while
+// BUG: Board hangs after a while, after storing about 10 frames in memory.
 #include <Arduino_FreeRTOS.h>
 #include <task.h>
 #include <queue.h>
@@ -16,7 +17,7 @@ const byte MPU = 0x68;                    // I2C address of the MPU-6050
 const byte NUM_GY521 = 3;                 // Number of sensors
 
 // Global variables below used for I-Frame, global since must keep in memory, a resend is possible.
-char IFramesBuffer[8][140];
+char IFramesBuffer[16][100];
 byte index = 0;
 byte numSend = 0;         // The current number of frame sent to RPi,         EXCLUDING H-Frame.
 byte numReceive = 0;      // The current number of frames received from RPi,  INCLUDING H-Frame.
@@ -26,8 +27,9 @@ SemaphoreHandle_t UninterruptedReadSemaphore = NULL;  // Ensures ReadValues run 
 TickType_t prevWakeTimeRead;
 TickType_t prevWakeTimeSend;
 
-const TickType_t READ_FREQUENCY = 200;   // runs the task ReadValues every READ_FREQUENCY ms
-const TickType_t SEND_FREQUENCY = 100;   // runs the task SendValues every SEND_FREQUENCY ms
+const TickType_t READ_FREQUENCY = 20;   // runs the task ReadValues every READ_FREQUENCY ms
+const TickType_t SEND_FREQUENCY = 3;    // runs the task SendValues every SEND_FREQUENCY ms.
+                                        // Must run much more frequently than ReadValues since each run of SendValues reads only one byte.
 const byte START = 0x7e;
 const byte STOP = 0x7e;
 const byte final2Bits_HFrame = 0x03;
@@ -116,7 +118,7 @@ void establishContact() {
           //Serial.write(msg, i + 1);
           Serial.println("Success");
           handshake = true;
-          numReceive = 1;
+          numReceive = (numReceive + 1) & 0x7F;
 
           memset(msg, NULL, i + 1);
           i = -1;
@@ -134,6 +136,7 @@ void establishContact() {
 }
 
 void sendIFrame(byte i) {
+  Serial.print("Frame number "); Serial.print(i); Serial.print(" = ");
   Serial.write(START);
   byte len = strlen(IFramesBuffer[i]);
   Serial.write(IFramesBuffer[i][0]);
@@ -142,14 +145,13 @@ void sendIFrame(byte i) {
     Serial.write(IFramesBuffer[i][j]);
   }
   Serial.write(STOP);
-  Serial.print("Frame number "); Serial.print(i); Serial.print(" = "); Serial.write(IFramesBuffer[i]);
 }
 
 // Reads in the gyro & accel values, packets it into an I-Frame and pushes it to CircularBuffer.
 void ReadValues(void *pvParameters) {
   unsigned long currentTime;
   int AcX[3], AcY[3], AcZ[3], GyX[3], GyY[3], GyZ[3];
-  char AcXChar[5], AcYChar[5], AcZChar[5], GyXChar[5], GyYChar[5], GyZChar[5],
+  char AcXChar[4], AcYChar[4], AcZChar[4], GyXChar[4], GyYChar[4], GyZChar[4],
        voltChar[6], currentChar[6], powerChar[6], energyChar[6];
   prevWakeTimeRead = xTaskGetTickCount();
   while (true) {
@@ -172,7 +174,7 @@ void ReadValues(void *pvParameters) {
         GyZ[sensor_loops] = Wire.read() << 8 | Wire.read();  // 0x47 (GYRO_ZOUT_H) & 0x48 (GYRO_ZOUT_L)
         Wire.endTransmission(true);
         AcX[sensor_loops] = AcY[sensor_loops] = AcZ[sensor_loops] = GyX[sensor_loops] = GyY[sensor_loops] = GyZ[sensor_loops] = 6875 + 10 * sensor_loops; // Dummy data, REMOVE
-        Serial.print(sensor_loops); Serial.print(" | ");
+        Serial.print("Frame No "); Serial.print(sensor_loops); Serial.print(" | ");
         Serial.print("AcX = "); Serial.print(AcX[sensor_loops]);
         Serial.print(" | AcY = "); Serial.print(AcY[sensor_loops]);
         Serial.print(" | AcZ = "); Serial.print(AcZ[sensor_loops]);
@@ -200,30 +202,30 @@ void ReadValues(void *pvParameters) {
       IFramesBuffer[index][2] = '\0';                 // to allow strcat to work properly
       // dtostrf(floatvar, StringLengthIncDecimalPoint, numVarsAfterDecimal, charbuf);
       for (byte sensor_loops = 0; sensor_loops < NUM_GY521; sensor_loops++) {
-        itoa(AcX[sensor_loops], AcXChar, 10);      // convert int to char[]
+        itoa(AcX[sensor_loops], AcXChar, 36);      // convert int to char[], with a base of 36 (0-9, a-z)
         strcat(IFramesBuffer[index], AcXChar);
         strcat(IFramesBuffer[index], ",");
-        memset(AcXChar, NULL, 5);
-        itoa(AcY[sensor_loops], AcYChar, 10);      // convert int to char[]
+        memset(AcXChar, NULL, 4);
+        itoa(AcY[sensor_loops], AcYChar, 36);      // convert int to char[], with a base of 36 (0-9, a-z)
         strcat(IFramesBuffer[index], AcYChar);
         strcat(IFramesBuffer[index], ",");
-        memset(AcYChar, NULL, 5);
-        itoa(AcZ[sensor_loops], AcZChar, 10);      // convert int to char[]
+        memset(AcYChar, NULL, 4);
+        itoa(AcZ[sensor_loops], AcZChar, 36);      // convert int to char[], with a base of 36 (0-9, a-z)
         strcat(IFramesBuffer[index], AcZChar);
         strcat(IFramesBuffer[index], ",");
-        memset(AcZChar, NULL, 5);
-        itoa(GyX[sensor_loops], GyXChar, 10);      // convert int to char[]
+        memset(AcZChar, NULL, 4);
+        itoa(GyX[sensor_loops], GyXChar, 36);      // convert int to char[], with a base of 36 (0-9, a-z)
         strcat(IFramesBuffer[index], GyXChar);
         strcat(IFramesBuffer[index], ",");
-        memset(GyXChar, NULL, 5);
-        itoa(GyY[sensor_loops], GyYChar, 10);      // convert int to char[]
+        memset(GyXChar, NULL, 4);
+        itoa(GyY[sensor_loops], GyYChar, 36);      // convert int to char[], with a base of 36 (0-9, a-z)
         strcat(IFramesBuffer[index], GyYChar);
         strcat(IFramesBuffer[index], ",");
-        memset(GyYChar, NULL, 5);
-        itoa(GyZ[sensor_loops], GyZChar, 10);      // convert int to char[]
+        memset(GyYChar, NULL, 4);
+        itoa(GyZ[sensor_loops], GyZChar, 36);      // convert int to char[], with a base of 36 (0-9, a-z)
         strcat(IFramesBuffer[index], GyZChar);
         strcat(IFramesBuffer[index], ",");
-        memset(GyZChar, NULL, 5);
+        memset(GyZChar, NULL, 4);
       }
       dtostrf(voltVal, 0, 2, voltChar);      // convert double to char[] with 2dp.
       strcat(IFramesBuffer[index], voltChar);
@@ -245,16 +247,9 @@ void ReadValues(void *pvParameters) {
       IFramesBuffer[index][len++] = checksum & 0xFF;
       IFramesBuffer[index][len] = '\0';
       Serial.print("Length of I-Frame is "); Serial.println(len);
-      //      bool deleteE = (IFramesBuffer[index][len] != 'E');
-      //      Serial.print("IFramesBuffer[index][len] is: "); Serial.println(IFramesBuffer[index][len]);
-      //      len = strlen(IFramesBuffer[index]);
-      //      Serial.print("Last IFrame character is: "); Serial.println(IFramesBuffer[index][len - 1]);
-      //      if ( (IFramesBuffer[index][len - 1] == 'E') && deleteE) IFramesBuffer[index][len - 1] = '\0'; // Destroy the elusive 'E' character that appears sometimes. Why does this even happen??
-      //      Serial.print("Complete IFrame #"); Serial.print(frameNum); Serial.print(" is "); Serial.println(IFramesBuffer[index]);
-      Serial.print("IFramesBuffer[frameNum] is: "); Serial.write(IFramesBuffer[frameNum]);
+      Serial.print("IFramesBuffer["); Serial.print(index); Serial.print("] is: "); Serial.write(IFramesBuffer[frameNum]);
       frameNum = (frameNum + 1) & 0x7F; // keeps the range of frameNum between 0 - 127
       index = (index + 1) & 0xF;
-
       xSemaphoreGive(UninterruptedReadSemaphore);
       vTaskDelayUntil(&prevWakeTimeRead, READ_FREQUENCY);
     }
@@ -294,12 +289,12 @@ void SendValues(void *pvParameters) {
           else if ( ( (buf[2] & 0b11) == final2Bits_SFrame) && isFrameCorrect(&buf[0], 'S') ) { // is an S-Frame, verify its correct
             // Check whether need to resend data
             // Trim to only frame[3:2]]. If true, RPi rejected the frame sent by Arduino, must resend
-            byte RPiReceive = (buf[1] >> 1) & 0x7;
+            byte RPiReceive = (buf[1] >> 1) & 0xF;
             numReceive = (numReceive + 1) & 0x7F;     // keeps numReceive between 0 - 127
             if ( ( (buf[2] >> 2) & 0b11) == SFRAME_REJ) {
               Serial.print("RPi has not received all frames, resending frames "); Serial.print(RPiReceive); Serial.print(" to "); Serial.println(numSend);
               if (RPiReceive > numSend) {   // frame number has exceeded 128
-                for (byte i = RPiReceive; i < 8; i++) {
+                for (byte i = RPiReceive; i < 16; i++) {
                   sendIFrame(i);
                 }
                 for (byte i = 0; i <= numSend; i++) {
@@ -344,6 +339,7 @@ void SendValues(void *pvParameters) {
           memset(buf, NULL, i + 1);
           i = -1;
           expectStopByte = false;
+          xSemaphoreGive(UninterruptedReadSemaphore);
         }
         else  Serial.print("byte is "); Serial.write(buf[i]); Serial.println("");
       }
