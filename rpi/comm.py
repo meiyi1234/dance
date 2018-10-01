@@ -30,7 +30,7 @@ class SerialProtocol(asyncio.Protocol):
 
         self.buf = CircularBuffer(1024)  # 1024-byte buffer
         self.send_buf = {}
-        self.send_buf[1] = []  # Allow appending to first elem
+        self.send_buf[self.send_seq] = []  # Allow appending to first elem
 
     async def _send_handshake(self):
         """Send handshake every 2 seconds."""
@@ -207,7 +207,7 @@ if __name__ == '__main__':
     csvfile = open('readings.csv', 'a+', newline='')
 
     loop = asyncio.get_event_loop()
-    coro = serial_asyncio.create_serial_connection(loop, SerialProtocol, '/dev/ttyS0', baudrate=9600)
+    coro = serial_asyncio.create_serial_connection(loop, SerialProtocol, '/dev/serial0', baudrate=115200)
     _, proto = loop.run_until_complete(coro)
     message = IFrame(proto.recv_seq, proto.send_seq, b'abcdef')
     asyncio.ensure_future(feed_frame(proto, message))

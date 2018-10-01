@@ -15,7 +15,7 @@ These instructions are for installing Raspbian with a desktop environment using 
 
 3. If you have an external monitor and keyboard, go to step 4. Otherwise, go to step 5.
 4. Follow instructions on the [official docs](https://projects.raspberrypi.org/en/projects/raspberry-pi-getting-started/4). Then go to step 10.
-5. Install Bonjour print services for windows for mDNS support. 
+5. Install Bonjour print services for windows for mDNS support.
 6. Using and HDMI cable for external display and a mouse (no keyboard needed), boot the pi. Connect to a hotspot (eg mobile, connectify) that has no password.
 7. Ensure your laptop is also connected to the hotspot. Using Putty, ssh into `pi@raspberrypi.local`, default password `raspberry`.
 8. Enter `passwd` to change password to `danceteam2`.
@@ -42,17 +42,6 @@ network={
 }
 ```
 
-**Setting a static IP (not working)**
-
-12. Follow [these instructions](https://raspberrypi.stackexchange.com/questions/37920/how-do-i-set-up-networking-wifi-static-ip-address/74428#74428) to set up a static IP address with dhcpcd. Example `/etc/dhcpcd.conf`:
-```
-interface wlan0
-static ip_address=172.31.38.121/22
-static routers=172.31.36.1
-static domain_name_servers=172.19.215.140 172.19.50.39
-```
-13. Connect to the NUS_STU_2-4GHz network on your PC and ssh into `pi@<static-ip>`. You can now SSH into the pi as long as you are connected to NUS_STU_2-4GHz (probably).
-
 **Graphical desktop sharing**
 
 14. Follow instructions here to [set up VNC](https://www.realvnc.com/en/connect/docs/raspberry-pi.html#setting-up-your-raspberry-pi). Using this setup does not require a static IP, just an account with RealVNC and an internet-connected pi.
@@ -63,4 +52,13 @@ See comments in the file for instructions and details.
 
 
 ### comm.py
+1. On the rpi, run `sudo nano /boot/config.txt`. Add the lines
+```
+enable_uart=1
+dtoverlay=pi3-disable-bt
+```
+This disables bluetooth to reduce energy consumption. It also redirects the GPIO pins 14 and 15 to ttyAMA0/PL011 module, instead of ttyS0/mini UART. Among other things, this allows higher baud rates, stable baud rates and frame error detection. See [here](https://www.raspberrypi.org/documentation/configuration/uart.md).
+Note that the config file does not support inline comments.
+2. `sudo systemctl disable hciuart` to disable the bluetooth startup service.
 
+`python comm.py` should work even if these commands are not run since it communicates with the `serial0` alias instead of `ttyAMA0`/`ttyS0` directly.
