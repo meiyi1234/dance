@@ -1,8 +1,6 @@
 // BUG: The Arduino starts outputting garbage after running for a while
 // BUG: Board hangs after a while, after storing about 10 frames in memory.
 #include <Arduino_FreeRTOS.h>
-#include <task.h>
-#include <queue.h>
 #include <semphr.h>
 #include <Wire.h>
 
@@ -17,19 +15,19 @@ const byte MPU = 0x68;                    // I2C address of the MPU-6050
 const byte NUM_GY521 = 3;                 // Number of sensors
 
 // Global variables below used for I-Frame, global since must keep in memory, a resend is possible.
-char IFramesBuffer[16][100];
+char IFramesBuffer[8][100];
 byte index = 0;
 byte numSend = 0;         // The current number of frame sent to RPi,         EXCLUDING H-Frame.
 byte numReceive = 0;      // The current number of frames received from RPi,  INCLUDING H-Frame.
 byte frameNum = 0;        // The current I-Frame number created in ReadValues
 
+QueueHandle_t xSerialSendQueue = NULL;
 SemaphoreHandle_t UninterruptedReadSemaphore = NULL;  // Ensures ReadValues run properly without SendValues running
 TickType_t prevWakeTimeRead;
 TickType_t prevWakeTimeSend;
 
 const TickType_t READ_FREQUENCY = 20;   // runs the task ReadValues every READ_FREQUENCY ms
-const TickType_t SEND_FREQUENCY = 3;    // runs the task SendValues every SEND_FREQUENCY ms.
-                                        // Must run much more frequently than ReadValues since each run of SendValues reads only one byte.
+
 const byte START = 0x7e;
 const byte STOP = 0x7e;
 const byte final2Bits_HFrame = 0x03;
@@ -148,12 +146,13 @@ void sendIFrame(byte i) {
 }
 
 // Reads in the gyro & accel values, packets it into an I-Frame and pushes it to CircularBuffer.
-void ReadValues(void *pvParameters) {
+void TaskReadSensors(void *pvParameters) {
   unsigned long currentTime;
   int AcX[3], AcY[3], AcZ[3], GyX[3], GyY[3], GyZ[3];
   char AcXChar[4], AcYChar[4], AcZChar[4], GyXChar[4], GyYChar[4], GyZChar[4],
        voltChar[6], currentChar[6], powerChar[6], energyChar[6];
   prevWakeTimeRead = xTaskGetTickCount();
+
   while (true) {
     if (xSemaphoreTake(UninterruptedReadSemaphore, 0) == pdTRUE) {
       for (byte sensor_loops = 0; sensor_loops < NUM_GY521; sensor_loops++) {
@@ -246,8 +245,11 @@ void ReadValues(void *pvParameters) {
       IFramesBuffer[index][len++] = checksum >> 8;
       IFramesBuffer[index][len++] = checksum & 0xFF;
       IFramesBuffer[index][len] = '\0';
+
+      xQueueSend(xSerialSendQueue, &IFramesBuffer[index], portMAX_DELAY);
+
       Serial.print("Length of I-Frame is "); Serial.println(len);
-      Serial.print("IFramesBuffer["); Serial.print(index); Serial.print("] is: "); Serial.write(IFramesBuffer[frameNum]);
+
       frameNum = (frameNum + 1) & 0x7F; // keeps the range of frameNum between 0 - 127
       index = (index + 1) & 0xF;
       xSemaphoreGive(UninterruptedReadSemaphore);
@@ -258,94 +260,111 @@ void ReadValues(void *pvParameters) {
 
 // Reads the accelerometer and gyroscope values from the Queue
 // Checks for an S-Frame so that Arduino knows that it is ok to send data
-void SendValues(void *pvParameters) {
+void TaskRecv(void *pvParameters) {
   byte buf[50];               // buf[0] = START, buf[1] = numReceive, buf[2] = frame, buf[3] = checkNum, buf[4] = checkNum, buf[5] = STOP
   bool expectStopByte = false;// Signal when a START byte has occured, so that the next such byte is a STOP byte.
   byte i = -1;                // used to fill buf
 
-  prevWakeTimeSend = xTaskGetTickCount();
   while (true) {
-    if (xSemaphoreTake(UninterruptedReadSemaphore, 0) == pdTRUE) {
-      if (Serial.available() > 0) {
-        buf[++i] = Serial.read();
-        if (i == 0 && buf[i] != START) {    // if expecting starting byte but receive otherwise
-          Serial.println("Error, Frame does not start with 0x7e");
-          i = -1;
-          expectStopByte = false;
-          memset(buf, NULL, 1);
-        }
-        else if (buf[i] == START && !expectStopByte) { // START byte received, the next identical byte received will be a STOP byte
-          expectStopByte = true;
-        }
-        else if (buf[i] == STOP && expectStopByte) {  // STOP byte is received, terminate the frame
-          Serial.println("Frame terminated");
-          if (buf[2] == final2Bits_HFrame && isFrameCorrect(&buf[0], 'H')) {  // is a H-Frame, verify its correct
-            Serial.print("Returning bytes: ");
-            Serial.write(buf, i + 1);
-            Serial.println("");
-            //Serial.write(msg, i + 1);
-            Serial.println("Success");
-          }
-          else if ( ( (buf[2] & 0b11) == final2Bits_SFrame) && isFrameCorrect(&buf[0], 'S') ) { // is an S-Frame, verify its correct
-            // Check whether need to resend data
-            // Trim to only frame[3:2]]. If true, RPi rejected the frame sent by Arduino, must resend
-            byte RPiReceive = (buf[1] >> 1) & 0xF;
-            numReceive = (numReceive + 1) & 0x7F;     // keeps numReceive between 0 - 127
-            if ( ( (buf[2] >> 2) & 0b11) == SFRAME_REJ) {
-              Serial.print("RPi has not received all frames, resending frames "); Serial.print(RPiReceive); Serial.print(" to "); Serial.println(numSend);
-              if (RPiReceive > numSend) {   // frame number has exceeded 128
-                for (byte i = RPiReceive; i < 16; i++) {
-                  sendIFrame(i);
-                }
-                for (byte i = 0; i <= numSend; i++) {
-                  sendIFrame(i);
-                }
-              }
-              else {
-                for (byte i = RPiReceive; i <= numSend; i++) {
-                  sendIFrame(i);
-                }
-              }
-            }
-            else if ( ( (buf[2] >> 2) & 0b11) == SFRAME_RR) {
-              Serial.print("RPi ready to receive frame number "); Serial.println(RPiReceive);
-              sendIFrame(RPiReceive);
-              numSend = (numSend + 1) & 0x7F;                   // Keeps send sequence no within 0-127
-            }
-          }
-          else if ( ( (buf[1] & 0b1) == 0b1) && ( (buf[2] & 0b1) == 0b0) && isFrameCorrect(&buf[0], 'I') ) { // is an I-Frame, verify its correct
-            numReceive = (numReceive + 1) & 0x7F;     // keeps numReceive between 0 - 127
-            char iFrameMsg[50];
-            byte i = 0;
-            iFrameMsg[i++] = buf[3];
-            for (byte j = 4; buf[j + 2] != STOP; j++) { // since checksum is 2 bytes long, followed by STOP byte, stop when hit 1st checksum byte
-              iFrameMsg[i++] = buf[j];
-            }
-            iFrameMsg[i] = '\0';  // terminate the string properly
-            Serial.print("The I-Frame Message is: " ); Serial.println(iFrameMsg);
-            // if(iFrameMsg.equals("send me data")) {   // Intepret the message sent in I-Frame
-            // Send S-Frame back to RPi
-            Serial.println("I-Frame received! Sending S-Frame");
-            Serial.write(START);
-            byte msg[2];
-            msg[0] = buf[1];
-            msg[1] = 0x01;
-            Serial.write(msg[0]);
-            Serial.write(msg[1]);
-            int checkNum = crc16(&msg[0], 2);
-            Serial.write(checkNum);
-            Serial.write(STOP);
-          }
-          memset(buf, NULL, i + 1);
-          i = -1;
-          expectStopByte = false;
-          xSemaphoreGive(UninterruptedReadSemaphore);
-        }
-        else  Serial.print("byte is "); Serial.write(buf[i]); Serial.println("");
+    // Wait forever until semaphore available
+    xSemaphoreTake(UninterruptedReadSemaphore, portMAX_DELAY);
+
+    if (Serial.available() > 0) {
+      buf[++i] = Serial.read();
+      if (i == 0 && buf[i] != START) {    // if expecting starting byte but receive otherwise
+        Serial.println("Error, Frame does not start with 0x7e");
+        i = -1;
+        expectStopByte = false;
+        memset(buf, NULL, 1);
       }
+      else if (buf[i] == START && !expectStopByte) { // START byte received, the next identical byte received will be a STOP byte
+        expectStopByte = true;
+      }
+      else if (buf[i] == STOP && expectStopByte) {  // STOP byte is received, terminate the frame
+        Serial.println("Frame terminated");
+        if (buf[2] == final2Bits_HFrame && isFrameCorrect(&buf[0], 'H')) {  // is a H-Frame, verify its correct
+          Serial.print("Returning bytes: ");
+          Serial.write(buf, i + 1);
+          Serial.println("");
+          //Serial.write(msg, i + 1);
+          Serial.println("Success");
+        }
+        else if ( ( (buf[2] & 0b11) == final2Bits_SFrame) && isFrameCorrect(&buf[0], 'S') ) { // is an S-Frame, verify its correct
+          // Check whether need to resend data
+          // Trim to only frame[3:2]]. If true, RPi rejected the frame sent by Arduino, must resend
+          byte RPiReceive = (buf[1] >> 1) & 0xF;
+          numReceive = (numReceive + 1) & 0x7F;     // keeps numReceive between 0 - 127
+          if ( ( (buf[2] >> 2) & 0b11) == SFRAME_REJ) {
+            Serial.print("RPi has not received all frames, resending frames "); Serial.print(RPiReceive); Serial.print(" to "); Serial.println(numSend);
+            if (RPiReceive > numSend) {   // frame number has exceeded 128
+              for (byte i = RPiReceive; i < 16; i++) {
+                sendIFrame(i);
+              }
+              for (byte i = 0; i <= numSend; i++) {
+                sendIFrame(i);
+              }
+            }
+            else {
+              for (byte i = RPiReceive; i <= numSend; i++) {
+                sendIFrame(i);
+              }
+            }
+          }
+          else if ( ( (buf[2] >> 2) & 0b11) == SFRAME_RR) {
+            Serial.print("RPi ready to receive frame number "); Serial.println(RPiReceive);
+            sendIFrame(RPiReceive);
+            numSend = (numSend + 1) & 0x7F;                   // Keeps send sequence no within 0-127
+          }
+        }
+        else if ( ( (buf[1] & 0b1) == 0b1) && ( (buf[2] & 0b1) == 0b0) && isFrameCorrect(&buf[0], 'I') ) { // is an I-Frame, verify its correct
+          numReceive = (numReceive + 1) & 0x7F;     // keeps numReceive between 0 - 127
+          char iFrameMsg[50];
+          byte i = 0;
+          iFrameMsg[i++] = buf[3];
+          for (byte j = 4; buf[j + 2] != STOP; j++) { // since checksum is 2 bytes long, followed by STOP byte, stop when hit 1st checksum byte
+            iFrameMsg[i++] = buf[j];
+          }
+          iFrameMsg[i] = '\0';  // terminate the string properly
+          Serial.print("The I-Frame Message is: " ); Serial.println(iFrameMsg);
+          // if(iFrameMsg.equals("send me data")) {   // Intepret the message sent in I-Frame
+          // Send S-Frame back to RPi
+          Serial.println("I-Frame received! Sending S-Frame");
+          Serial.write(START);
+          byte msg[2];
+          msg[0] = buf[1];
+          msg[1] = 0x01;
+          Serial.write(msg[0]);
+          Serial.write(msg[1]);
+          int checkNum = crc16(&msg[0], 2);
+          Serial.write(checkNum);
+          Serial.write(STOP);
+        }
+        memset(buf, NULL, i + 1);
+        i = -1;
+        expectStopByte = false;
+        xSemaphoreGive(UninterruptedReadSemaphore);
+      }
+      else  {
+        Serial.print("byte is "); Serial.write(buf[i]); Serial.println("");
+      }
+
       xSemaphoreGive(UninterruptedReadSemaphore);
-      vTaskDelayUntil(&prevWakeTimeSend, SEND_FREQUENCY);
     }
+  }
+}
+
+void TaskSend(void *pvParameters) {
+  char* pFrame;
+
+  while (true) {
+    xQueueReceive(xSerialSendQueue, &pFrame, portMAX_DELAY);  // pFrame points to buffer index
+    xSemaphoreTake(UninterruptedReadSemaphore, portMAX_DELAY);
+
+    Serial.println("Sending frame");
+    Serial.write(pFrame);  // Write until NULL encountered
+    Serial.println("Done");
+
+    xSemaphoreGive(UninterruptedReadSemaphore);
   }
 }
 
@@ -377,15 +396,24 @@ void setup() {
   startTime = millis();
 
   // initialize Serial communication at 9600 bits per second:
-  Serial.begin(9600);
+  Serial.begin(115200);
   //Serial.begin(9600);
   Serial.println("Start up");
-  establishContact();
+//  establishContact();
   Serial.println("Finish contact");
+
+  // Create queue capable of holding 16 pointers to frame structs
+  xSerialSendQueue = xQueueCreate(16, sizeof(char*));
+
   UninterruptedReadSemaphore = xSemaphoreCreateMutex();
   xSemaphoreGive(UninterruptedReadSemaphore);
-  xTaskCreate(ReadValues, "ReadValues", 2000, NULL, 3, NULL);
-  xTaskCreate(SendValues, "SendValues", 2500, NULL, 2, NULL);
+
+  // Highest priority
+  xTaskCreate(TaskReadSensors, "Read sensors", 256, NULL, 4, NULL);
+  xTaskCreate(TaskSend, "Serial send", 256, NULL, 3, NULL);
+  // Lowest priority since very few messages will be sent by primary
+  xTaskCreate(TaskRecv, "Serial recv", 128, NULL, 2, NULL);
+
   Serial.println("Starting Task Scheduler");
   vTaskStartScheduler();
 }
