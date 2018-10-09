@@ -14,11 +14,13 @@ const byte final2Bits_HFrame = 0x03;
 const byte final2Bits_SFrame = 0x01;
 
 // Constants that may be adjusted according to our needs
-#define VOLT_DIVIDER    A0
-#define VOUT            A2
-#define NUM_GY521       3
-#define BAUD_RATE       115200
-#define BUFFER_SIZE     32
+#define VOLT_DIVIDER      A0
+#define VOUT              A2
+#define NUM_GY521         3
+#define BAUD_RATE         115200
+#define BUFFER_SIZE       32
+#define MIN_IFRAME_LENGTH 50
+#define MAX_IFRAME_LENGTH 135
 const TickType_t xDelay = 1000 / portTICK_PERIOD_MS;    // 10ms - Period of TaskReadSensors
 
 unsigned long startTime;
@@ -26,7 +28,7 @@ uint8_t send_seq = 1, recv_seq = 0; // used for filling in control byte fields w
 uint8_t lastSent = 0;                // keeps track of the current last frame put in buffer
 uint8_t lastACK = BUFFER_SIZE - 1;   // keeps track of the last acknowledged frame by the RPi. Set to BUFFER_SIZE - 1 to account for first ACK case after handshake.
 uint8_t freeBuffer = BUFFER_SIZE;   // if = 0, stop reading new values
-char send_buf[BUFFER_SIZE][135];
+char send_buf[BUFFER_SIZE][MAX_IFRAME_LENGTH];
 uint8_t buf_idx = 0;
 
 // FreeRTOS data structures
@@ -358,16 +360,17 @@ void TaskRecv(void *pvParameters) {
           lastACK = (RPiReceive == 0) ? (BUFFER_SIZE - 1) : (RPiReceive - 1);
           freeBuffer += ( (firstACK > lastACK) ? BUFFER_SIZE : 0) + lastACK - firstACK + 1;
           if (firstACK > lastACK) {
+            // We do not need to reset the whole buffer as that wastes time. We only reset until at the least STOP byte is cleared even for the shortest possible I-Frame.
             for (uint8_t i = firstACK; i < BUFFER_SIZE; i++) {
-              memset(send_buf[i] + 90, NULL, 38);   // We do not need to reset the whole buffer as that wastes time. We only reset until at the least STOP byte is cleared even for the shortest possible I-Frame.
+              memset(send_buf[i] + MIN_IFRAME_LENGTH, NULL, MAX_IFRAME_LENGTH - MIN_IFRAME_LENGTH);
             }
             for (uint8_t i = 0; i <= lastACK; i++) {
-              memset(send_buf[i] + 90, NULL, 38);
+              memset(send_buf[i] + MIN_IFRAME_LENGTH, NULL, MAX_IFRAME_LENGTH - MIN_IFRAME_LENGTH);
             }
           }
           else {
             for (uint8_t i = firstACK; i <= lastACK; i++) {
-              memset(send_buf[i] + 90, NULL, 38);
+              memset(send_buf[i] + MIN_IFRAME_LENGTH, NULL, MAX_IFRAME_LENGTH - MIN_IFRAME_LENGTH);
             }
           }
           if (SFrameType == SFRAME_RNR) {
