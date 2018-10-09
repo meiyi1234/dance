@@ -17,7 +17,7 @@ typedef enum Frame { IFrame=0, SFrame=1, HFrame=3 } Frame;
 
 unsigned long startTime;
 uint8_t send_seq = 1, recv_seq = 0;
-char send_buf[8][128];
+char send_buf[8][140];
 uint8_t buf_idx = 0;
 
 // FreeRTOS data structures
@@ -36,7 +36,7 @@ void setup() {
   Serial3.begin(115200);   // rpi
   Serial.println("Ready");
 
-  xSerialSendQueue = xQueueCreate(16, sizeof(uint8_t));
+  xSerialSendQueue = xQueueCreate(16, sizeof(uint32_t));
 
   xSerialSemaphore = xSemaphoreCreateMutex();
   xSemaphoreGive(xSerialSemaphore);
@@ -133,6 +133,25 @@ void setupSensors() {
   startTime = millis();
 }
 
+uint16_t writeEscaped(char* buf, uint16_t write_start, char* data) {
+  // Writes characters in data to buf starting at write_start. Escapes START_STOP_BYTE
+  // and ESCAPE_BYTE if they are found. Returns length of data written.
+  char byt;
+  uint16_t pos = write_start;
+  for (uint16_t i = 0; i < strlen(data); i++) {
+    byt = data[i];
+    if (byt == START_STOP_BYTE || byt == ESCAPE_BYTE) {
+      buf[pos++] = ESCAPE_BYTE;
+      buf[pos++] = byt ^ 0x20;
+    }
+    else {
+      buf[pos++] = byt;
+    }
+  }
+  buf[pos] = '\0';
+  return pos - write_start;
+}
+
 void TaskReadSensors(void *pvParameters) {
   uint16_t buf_len, checksum;
   int AcX[NUM_GY521], AcY[NUM_GY521], AcZ[NUM_GY521];
@@ -140,10 +159,12 @@ void TaskReadSensors(void *pvParameters) {
   int voltMeasurement, currentMeasurement;
   float voltVal, currentVout, currentVal, powerVal, energyVal = 0;
   char voltStr[8], currentStr[8], powerStr[8], energyStr[8];
+  char control_chars[3], check_chars[3];
   unsigned long currentTime, timeDelta;  // startTime defined globallly
+  uint32_t qmsg;
 
   TickType_t prevWakeTime = xTaskGetTickCount();
-  const TickType_t xDelay = 1500 / portTICK_PERIOD_MS;  // 10ms
+  const TickType_t xDelay = 1000 / portTICK_PERIOD_MS;
 
   for (;;) {
     for (uint8_t i=0; i<NUM_GY521; i++) {
@@ -186,44 +207,49 @@ void TaskReadSensors(void *pvParameters) {
     dtostrf(energyVal, 0, 1, energyStr);
 
     // Package into I-frame
-    xSemaphoreTake(xSerialSemaphore, portMAX_DELAY);  // TODO: remove
-
     buf_len = 0;
+
+    // Start
     buf_len += sprintf(send_buf[buf_idx] + buf_len,
-                       "%c%c%c",
-                       START_STOP_BYTE, (recv_seq << 1) | 0x1, send_seq << 1);  // Control fields
+                       "%c",
+                       START_STOP_BYTE);
 
-    Serial.print("buf after 3 bytes: "); Serial.println(send_buf[buf_idx]);
+    // Recv, send seq
+    control_chars[] = {(recv_seq << 1) | 0x1, send_seq << 1, '\0'};
+    // Escape if contains 7D/7E
+    buf_len += writeEscaped(send_buf[buf_idx], buf_len, control_chars);
 
-    for (uint8_t i=0; i<NUM_GY521; i++) {  // Sensor readings
+    // Sensor reading - no need to escape since str won't contain ascii 7D={ or 7E=~
+    for (uint8_t i=0; i<NUM_GY521; i++) {
       buf_len += sprintf(send_buf[buf_idx] + buf_len,
                          "%d,%d,%d,%d,%d,%d,",
                          AcX[i], AcY[i], AcZ[i], GyX[i], GyY[i], GyZ[i]);
-      Serial.print("buf after sensor readings "); Serial.print(i);
-      Serial.print(": "); Serial.println(send_buf[buf_idx]);
     }
 
-    buf_len += sprintf(send_buf[buf_idx] + buf_len,  // Telemetry
+    // Telemetry - no need to escape since str won't contain ascii 7D={ or 7E=~
+    buf_len += sprintf(send_buf[buf_idx] + buf_len,
                        "%s,%s,%s,%s",
                        voltStr, currentStr, powerStr, energyStr);
 
-    Serial.print("buf after telemetry"); Serial.println(send_buf[buf_idx]);
+    // Checksum - don't include start byte
+    checksum = crc16(&send_buf[buf_idx][1], buf_len - 1);
+    check_chars[] = {checksum >> 8, checksum & 0xFF, '\0'};
+    // Escape checksum if contains 7D/7E
+    buf_len += writeEscaped(send_buf[buf_idx], buf_len+1, check_chars);
 
-    Serial.print("buf len: "); Serial.println(buf_len);
-    Serial.print("str len: "); Serial.println(strlen(send_buf[buf_idx]));
-    checksum = crc16(&send_buf[buf_idx][1], buf_len - 1);   // Don't include start byte in checksum
-
+    // Stop
     buf_len += sprintf(send_buf[buf_idx] + buf_len,
-                       "%c%c%c",
-                       checksum >> 8, checksum & 0xFF, START_STOP_BYTE);
+                       "%c",
+                       START_STOP_BYTE);
 
     // TaskSend handles sending data
-    xQueueSend(xSerialSendQueue, &buf_idx, portMAX_DELAY);
+    xSemaphoreTake(xSerialSemaphore, portMAX_DELAY);
+    Serial.print("buf_len: "); Serial.println(buf_len);
+    qmsg = buf_len << 8 | buf_idx;
 
     buf_idx = (buf_idx + 1) & 0x07;
     send_seq = (send_seq + 1) & 0x7F;
 
-    // xSemaphoreTake(xSerialSemaphore, portMAX_DELAY);
     // TODO: remove
     for (uint8_t i=0; i<NUM_GY521; i++) {
       Serial.print(i); Serial.print(" | ");
@@ -241,6 +267,7 @@ void TaskReadSensors(void *pvParameters) {
     Serial.print(" | Energy(J) = ");  Serial.println(energyVal);
     Serial.print("Checksum: "); Serial.println(checksum);
 
+    xQueueSend(xSerialSendQueue, &qmsg, portMAX_DELAY);
     xSemaphoreGive(xSerialSemaphore);
 
     // Wait
@@ -250,32 +277,26 @@ void TaskReadSensors(void *pvParameters) {
 
 
 void TaskSend(void *pvParameters) {
-  uint8_t buf_read_idx, byt;
+  uint32_t qmsg;
   uint16_t len;
+  uint8_t byt, idx;
+  uint16_t i;
 
   for (;;) {
-    xQueueReceive(xSerialSendQueue, &buf_read_idx, portMAX_DELAY);
+    xQueueReceive(xSerialSendQueue, &qmsg, portMAX_DELAY);
+    idx = qmsg & 0xFF;
+    len = qmsg >> 8;
+
     xSemaphoreTake(xSerialSemaphore, portMAX_DELAY);
 
-    Serial.print("Received buf index: "); Serial.println(buf_read_idx);
+    Serial.print("SEND send_seq: "); Serial.println(send_seq);
+    Serial.print("idx: "); Serial.println(idx);
+    Serial.print("buf len: "); Serial.println(len);
     Serial.println("BUF -------------");
-    Serial.write(send_buf[buf_read_idx]);
-    Serial.println("");
+    Serial.write(send_buf[idx], len);
+    Serial.println("\n");
 
-    len = strlen(send_buf[buf_read_idx]);
-    // Escape before sending
-    for (uint16_t i = 0; i < len; i++) {
-      byt = send_buf[buf_read_idx][i];
-      if ((byt == START_STOP_BYTE || byt == ESCAPE_BYTE)
-           && !(i == 0 || i == len-1)) {
-        Serial.println("Escaped!");
-        Serial3.write(ESCAPE_BYTE);
-        Serial3.write(byt ^ 0x20);
-      }
-      else {
-        Serial3.write(byt);
-      }
-    }
+    Serial3.write(send_buf[idx], len);
 
     xSemaphoreGive(xSerialSemaphore);
   }
@@ -427,12 +448,6 @@ bool isFrameCorrect(byte* buf, char type) {
 }
 
 uint16_t crc16(char* buf, int len) {
-    char str1[5], str2[5];
-    sprintf(str1, "%02X", buf[0]);
-    sprintf(str2, "%02X", buf[len-1]);
-    Serial.print("first byte: ");  Serial.print(str1);
-    Serial.print(", last byte: "); Serial.println(str2);
-
     uint16_t remainder = 0x0000;
     uint16_t poly = 0x1021;
     for (int byte = 0; byte < len; ++byte) {
@@ -452,3 +467,4 @@ void loop()
 {
   // Empty. Things are done in Tasks.
 }
+
