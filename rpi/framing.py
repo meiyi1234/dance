@@ -94,6 +94,7 @@ class Frame:
         one complete frame, including start and stop bytes.
         Frame returned is of type Frame, not its subclass.
         """
+        print('bytes_ len: {}'.format(len(bytes_)))
         if (bytes_[0] != START_STOP_BYTE or bytes_[-1] != START_STOP_BYTE):
             raise ValueError('Message does not contain either start byte, stop byte, or both')
 

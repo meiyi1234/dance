@@ -51,7 +51,7 @@ class CircularBuffer:
                     continue
                 else:
                     break
-        return bytes(bytearr)
+        return bytearray(bytearr)
 
     def _will_be_full(self, size):
         """Returns true if buf will be full after size bytes added to buffer"""
