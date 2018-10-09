@@ -19,14 +19,14 @@ const byte final2Bits_SFrame = 0x01;
 #define NUM_GY521       3
 #define BAUD_RATE       115200
 #define BUFFER_SIZE     32
-const TickType_t xDelay = 1500 / portTICK_PERIOD_MS;    // 10ms - Period of TaskReadSensors
+const TickType_t xDelay = 1000 / portTICK_PERIOD_MS;    // 10ms - Period of TaskReadSensors
 
 unsigned long startTime;
 uint8_t send_seq = 1, recv_seq = 0; // used for filling in control byte fields when sending frames
 uint8_t lastSent = 0;                // keeps track of the current last frame put in buffer
 uint8_t lastACK = BUFFER_SIZE - 1;   // keeps track of the last acknowledged frame by the RPi. Set to BUFFER_SIZE - 1 to account for first ACK case after handshake.
 uint8_t freeBuffer = BUFFER_SIZE;   // if = 0, stop reading new values
-char send_buf[BUFFER_SIZE][128];
+char send_buf[BUFFER_SIZE][135];
 uint8_t buf_idx = 0;
 
 // FreeRTOS data structures
@@ -45,7 +45,7 @@ void setup() {
   Serial3.begin(BAUD_RATE);  // RPi Serial 
   Serial.println("Ready");
 
-  xSerialSendQueue = xQueueCreate(16, sizeof(uint8_t));
+  xSerialSendQueue = xQueueCreate(BUFFER_SIZE, sizeof(uint8_t));
   xSerialSemaphore = xSemaphoreCreateMutex();
   xSemaphoreGive(xSerialSemaphore);
 
@@ -136,6 +136,25 @@ void setupSensors() {
   startTime = millis();
 }
 
+uint16_t writeEscaped(char* buf, uint16_t write_start, char* data) {
+  // Writes characters in data to buf starting at write_start. Escapes START_STOP_BYTE
+  // and ESCAPE_BYTE if they are found. Returns length of data written.
+  char byt;
+  uint16_t pos = write_start;
+  for (uint16_t i = 0; i < strlen(data); i++) {
+    byt = data[i];
+    if (byt == START_STOP_BYTE || byt == ESCAPE_BYTE) {
+      buf[pos++] = ESCAPE_BYTE;
+      buf[pos++] = byt ^ 0x20;
+    }
+    else {
+      buf[pos++] = byt;
+    }
+  }
+  buf[pos] = '\0';
+  return pos - write_start;
+}
+
 void TaskReadSensors(void *pvParameters) {
   uint16_t buf_len, checksum;
   int AcX[NUM_GY521], AcY[NUM_GY521], AcZ[NUM_GY521];
@@ -143,6 +162,7 @@ void TaskReadSensors(void *pvParameters) {
   int voltMeasurement, currentMeasurement;
   float voltVal, currentVout, currentVal, powerVal, energyVal = 0;
   char voltStr[8], currentStr[8], powerStr[8], energyStr[8];
+  char control_chars[3], check_chars[3];
   unsigned long currentTime, timeDelta;  // startTime defined globallly
 
   TickType_t prevWakeTime = xTaskGetTickCount();
@@ -152,6 +172,8 @@ void TaskReadSensors(void *pvParameters) {
       vTaskDelayUntil(&prevWakeTime, xDelay);
       continue;
     }*/
+    xSemaphoreTake(xSerialSemaphore, portMAX_DELAY);
+    
     for (uint8_t i = 0; i < NUM_GY521; i++) {
       digitalWrite(5, HIGH);
       digitalWrite(6, HIGH);
@@ -194,35 +216,34 @@ void TaskReadSensors(void *pvParameters) {
     dtostrf(energyVal, 0, 1, energyStr);
 
     // Package into I-frame
-    xSemaphoreTake(xSerialSemaphore, portMAX_DELAY);  // TODO: remove
-
     buf_len = 0;
-    buf_len += sprintf(send_buf[buf_idx] + buf_len,
-                       "%c%c",
-                       (recv_seq << 1) | 0x1, send_seq << 1);  // Control fields
+    
+    // Recv, send seq
+    control_chars[0] = (recv_seq << 1) | 0x1;
+    control_chars[1] = send_seq << 1;
+    control_chars[2] = '\0';
+    // Escape if contains 7D/7E
+    buf_len += writeEscaped(send_buf[buf_idx], buf_len, control_chars);
 
-    Serial.print("buf after 2 bytes: "); Serial.println(send_buf[buf_idx]);
-
-    for (uint8_t i = 0; i < NUM_GY521; i++) { // Sensor readings
+    // Sensor reading - no need to escape since str won't contain ascii 7D={ or 7E=~
+    for (uint8_t i = 0; i < NUM_GY521; i++) {
       buf_len += sprintf(send_buf[buf_idx] + buf_len,
                          "%d,%d,%d,%d,%d,%d,",
                          AcX[i], AcY[i], AcZ[i], GyX[i], GyY[i], GyZ[i]);
-      Serial.print("buf after sensor readings "); Serial.print(i); Serial.print(": "); Serial.println(send_buf[buf_idx]);
     }
 
-    buf_len += sprintf(send_buf[buf_idx] + buf_len,  // Telemetry
+    // Telemetry - no need to escape since str won't contain ascii 7D={ or 7E=~
+    buf_len += sprintf(send_buf[buf_idx] + buf_len,
                        "%s,%s,%s,%s",
                        voltStr, currentStr, powerStr, energyStr);
 
-    Serial.print("buf after telemetry"); Serial.println(send_buf[buf_idx]);
-
-    Serial.print("buf len: "); Serial.println(buf_len);
-    Serial.print("str len: "); Serial.println(strlen(send_buf[buf_idx]));
+    // Checksum
     checksum = crc16(&send_buf[buf_idx][0], buf_len);
-
-    buf_len += sprintf(send_buf[buf_idx] + buf_len,
-                       "%c%c",
-                       checksum >> 8, checksum & 0xFF);
+    check_chars[0] = checksum >> 8;
+    check_chars[1] = checksum & 0xFF;
+    check_chars[2] = '\0';
+    // Escape checksum if contains 7D/7E
+    buf_len += writeEscaped(send_buf[buf_idx], buf_len, check_chars);
 
     // TaskSend handles sending data
     xQueueSend(xSerialSendQueue, &buf_idx, portMAX_DELAY);
@@ -266,23 +287,13 @@ void TaskSend(void *pvParameters) {
     Serial.write(send_buf[buf_read_idx]);
     Serial.println("");
 
-    Serial3.write(START_STOP_BYTE);          // RPi Serial
+    Serial3.write(START_STOP_BYTE);             // RPi Serial
     len = strlen(send_buf[buf_read_idx]);
     Serial.print("send_buf["); Serial.print(buf_read_idx); Serial.print("] is of length "); Serial.println(len);
 
     // Escape before sending
-    for (uint16_t i = 0; i < len; i++) {
-      byt = send_buf[buf_read_idx][i];
-      if (byt == START_STOP_BYTE || byt == ESCAPE_BYTE) {
-        Serial.println("Escaped!");
-        Serial3.write(ESCAPE_BYTE);          // RPi Serial
-        Serial3.write(byt ^ 0x20);           // RPi Serial
-      }
-      else {
-        Serial3.write(byt);                  // RPi Serial
-      }
-    }
-    Serial3.write(START_STOP_BYTE);          // RPi Serial
+    Serial3.write(send_buf[buf_read_idx], len); // RPi Serial
+    Serial3.write(START_STOP_BYTE);             // RPi Serial
     lastSent = (lastSent + 1) & (BUFFER_SIZE - 1);
     xSemaphoreGive(xSerialSemaphore);
   }
