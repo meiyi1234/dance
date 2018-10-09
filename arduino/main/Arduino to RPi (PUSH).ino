@@ -18,7 +18,7 @@ const byte final2Bits_SFrame = 0x01;
 #define VOUT            A2
 #define NUM_GY521       3
 #define BAUD_RATE       115200
-#define BUFFER_SIZE     8
+#define BUFFER_SIZE     32
 const TickType_t xDelay = 1500 / portTICK_PERIOD_MS;    // 10ms - Period of TaskReadSensors
 
 unsigned long startTime;
@@ -38,11 +38,11 @@ void setup() {
   pinMode(5, OUTPUT);
   pinMode(6, OUTPUT);
   pinMode(7, OUTPUT);
-  pinMode(A0, INPUT); // Voltage Divider output
-  pinMode(A2, INPUT); // INA169 VOut
+  pinMode(VOLT_DIVIDER, INPUT); // Voltage Divider output
+  pinMode(VOUT, INPUT);         // INA169 VOut
 
-  Serial.begin(BAUD_RATE);    // pc
-  Serial.begin(BAUD_RATE);   // rpi
+  Serial.begin(BAUD_RATE);  // PC Serial
+  Serial3.begin(BAUD_RATE);  // RPi Serial 
   Serial.println("Ready");
 
   xSerialSendQueue = xQueueCreate(16, sizeof(uint8_t));
@@ -68,10 +68,10 @@ void establishContact() {
   byte msg[6];
   byte i = -1;           // to fill buf
   while (!handshake) {
-    if (Serial.available() <= 0) {
+    if (Serial3.available() <= 0) {    // RPi Serial
       continue;
     }
-    msg[++i] = Serial.read();
+    msg[++i] = Serial3.read();         // RPi Serial
 
     if (i == 0 && msg[i] != START_STOP_BYTE) { // If receiving first byte but is not START byte
       Serial.println("Error, frame doesnt start with 0x7e");
@@ -96,10 +96,10 @@ void establishContact() {
         Serial.print("Returning bytes: ");
         Serial.write(msg, i + 1);
         Serial.println("");
-        Serial.write(msg, i + 1);
+        Serial3.write(msg, i + 1);          // RPi Serial
         Serial.println("Success");
         handshake = true;
-        recv_seq = (recv_seq + 1) & 0x7F;
+        recv_seq = (recv_seq + 1) & 0x7F;   // Keeps the sequence number between 0 - 127 to fit into control_byte
 
         memset(msg, NULL, i + 1);
         i = -1;
@@ -107,9 +107,7 @@ void establishContact() {
       }
     }
     else {  // receiving the other bytes in between
-      Serial.print("byte is ");
-      Serial.write(msg[i]);
-      Serial.println("");
+      Serial.print("byte is "); Serial.write(msg[i]); Serial.println("");
     }
     delay(10);
   }
@@ -123,16 +121,16 @@ void setupSensors() {
     digitalWrite(5 + i, LOW);
     Wire.begin();
     Wire.beginTransmission(MPU);
-    Wire.write(0x6B); // PWR_MGMT_1 register
-    Wire.write(0); // set to zero (wakes up the MPU-6050)
+    Wire.write(0x6B);           // PWR_MGMT_1 register
+    Wire.write(0);              // set to zero (wakes up the MPU-6050)
     Wire.endTransmission(true);
     Wire.beginTransmission(MPU);
-    Wire.write(0x1C); // ACCEL_CONFIG register
-    Wire.write(8); // FS_SEL 01: 4g
+    Wire.write(0x1C);           // ACCEL_CONFIG register
+    Wire.write(8);              // FS_SEL 01: 4g
     Wire.endTransmission(true);
     Wire.beginTransmission(MPU);
-    Wire.write(0x1B); // GYRO_CONFIG register
-    Wire.write(16); // FS_SEL 10: 1000 degrees per second
+    Wire.write(0x1B);           // GYRO_CONFIG register
+    Wire.write(16);             // FS_SEL 10: 1000 degrees per second
     Wire.endTransmission(true);
   }
   startTime = millis();
@@ -149,11 +147,11 @@ void TaskReadSensors(void *pvParameters) {
 
   TickType_t prevWakeTime = xTaskGetTickCount();
   for (;;) {
-    if (freeBuffer <= 0) {  // if no free buffer space left, stop reading new values
+    /*if (freeBuffer <= 0) {  // if no free buffer space left, stop reading new values
       Serial.println("No more free buffer space!");
       vTaskDelayUntil(&prevWakeTime, xDelay);
       continue;
-    }
+    }*/
     for (uint8_t i = 0; i < NUM_GY521; i++) {
       digitalWrite(5, HIGH);
       digitalWrite(6, HIGH);
@@ -161,9 +159,9 @@ void TaskReadSensors(void *pvParameters) {
       digitalWrite(5 + i, LOW);
 
       Wire.beginTransmission(MPU);
-      Wire.write(0x3B); // starting with register 0x3B (ACCEL_XOUT_H)
+      Wire.write(0x3B);                         // starting with register 0x3B (ACCEL_XOUT_H)
       Wire.endTransmission(false);
-      Wire.requestFrom(MPU, 14, true); // request a total of 14 registers
+      Wire.requestFrom(MPU, 14, true);          // request a total of 14 registers
       AcX[i] = Wire.read() << 8 | Wire.read();  // 0x3B (ACCEL_XOUT_H) & 0x3C (ACCEL_XOUT_L)
       AcY[i] = Wire.read() << 8 | Wire.read();  // 0x3D (ACCEL_YOUT_H) & 0x3E (ACCEL_YOUT_L)
       AcZ[i] = Wire.read() << 8 | Wire.read();  // 0x3F (ACCEL_ZOUT_H) & 0x40 (ACCEL_ZOUT_L)
@@ -177,17 +175,17 @@ void TaskReadSensors(void *pvParameters) {
       Wire.endTransmission(true);
     }
 
-    voltMeasurement = analogRead(A0);
-    currentMeasurement = analogRead(A2);
+    voltMeasurement = analogRead(VOLT_DIVIDER);
+    currentMeasurement = analogRead(VOUT);
 
     currentTime = millis();
     timeDelta = currentTime - startTime;
     startTime = currentTime;
 
-    voltVal = (float) voltMeasurement * 5 * 2 / 1023.0; // Volt, voltage divider halves voltage
-    currentVout = (float) currentMeasurement * 5 / 1023.0; // INA169 Vout
-    currentVal = (currentVout * 1000.0) * 1000.0 / (0.1 * 10000.0); // mA, Rs = 10 Ohms Rl = 10k Ohms
-    powerVal = voltVal * currentVal; // mW
+    voltVal = (float) voltMeasurement * 5 * 2 / 1023.0;                       // Volt, voltage divider halves voltage
+    currentVout = (float) currentMeasurement * 5 / 1023.0;                    // INA169 Vout
+    currentVal = (currentVout * 1000.0) * 1000.0 / (0.1 * 10000.0);           // mA, Rs = 10 Ohms Rl = 10k Ohms
+    powerVal = voltVal * currentVal;                                          // mW
     energyVal = energyVal + ((powerVal / 1000) * ((float) timeDelta / 1000)); // Joules
 
     dtostrf(voltVal, 0, 2, voltStr);
@@ -209,8 +207,7 @@ void TaskReadSensors(void *pvParameters) {
       buf_len += sprintf(send_buf[buf_idx] + buf_len,
                          "%d,%d,%d,%d,%d,%d,",
                          AcX[i], AcY[i], AcZ[i], GyX[i], GyY[i], GyZ[i]);
-      Serial.print("buf after sensor readings "); Serial.print(i);
-      Serial.print(": "); Serial.println(send_buf[buf_idx]);
+      Serial.print("buf after sensor readings "); Serial.print(i); Serial.print(": "); Serial.println(send_buf[buf_idx]);
     }
 
     buf_len += sprintf(send_buf[buf_idx] + buf_len,  // Telemetry
@@ -232,7 +229,7 @@ void TaskReadSensors(void *pvParameters) {
 
     freeBuffer -= 1;
     buf_idx = (buf_idx + 1) & (BUFFER_SIZE - 1);
-    send_seq = (send_seq + 1) & 0x7F;
+    send_seq = (send_seq + 1) & 0x7F;             // Keeps the sequence number between 0 - 127 to fit into control_byte
 
     // TODO: remove
     for (uint8_t i = 0; i < NUM_GY521; i++) {
@@ -266,26 +263,26 @@ void TaskSend(void *pvParameters) {
     xSemaphoreTake(xSerialSemaphore, portMAX_DELAY);
 
     Serial.print("Received buf index: "); Serial.println(buf_read_idx);
-    Serial.println("BUF -------------");
-    //Serial.write(send_buf[buf_read_idx]);
-    //Serial.println("");
+    Serial.write(send_buf[buf_read_idx]);
+    Serial.println("");
 
-    Serial.write(START_STOP_BYTE);
+    Serial3.write(START_STOP_BYTE);          // RPi Serial
     len = strlen(send_buf[buf_read_idx]);
+    Serial.print("send_buf["); Serial.print(buf_read_idx); Serial.print("] is of length "); Serial.println(len);
 
     // Escape before sending
     for (uint16_t i = 0; i < len; i++) {
       byt = send_buf[buf_read_idx][i];
       if (byt == START_STOP_BYTE || byt == ESCAPE_BYTE) {
         Serial.println("Escaped!");
-        Serial.write(ESCAPE_BYTE);
-        Serial.write(byt ^ 0x20);
+        Serial3.write(ESCAPE_BYTE);          // RPi Serial
+        Serial3.write(byt ^ 0x20);           // RPi Serial
       }
       else {
-        Serial.write(byt);
+        Serial3.write(byt);                  // RPi Serial
       }
     }
-    Serial.write(START_STOP_BYTE);
+    Serial3.write(START_STOP_BYTE);          // RPi Serial
     lastSent = (lastSent + 1) & (BUFFER_SIZE - 1);
     xSemaphoreGive(xSerialSemaphore);
   }
@@ -298,12 +295,12 @@ void TaskRecv(void *pvParameters) {
 
   for (;;) {
     xSemaphoreTake(xSerialSemaphore, portMAX_DELAY);
-    if (Serial.available() <= 0) {
+    if (Serial3.available() <= 0) {                // RPi Serial
       delay(10);
       xSemaphoreGive(xSerialSemaphore);
       continue;
     }
-    buf[++i] = Serial.read();
+    buf[++i] = Serial3.read();                     // RPi Serial
     if (i == 0 && buf[i] != START_STOP_BYTE) {    // if expecting starting byte but receive otherwise
       Serial.println("Error, Frame does not start with 0x7e");
       i = -1;
@@ -319,14 +316,14 @@ void TaskRecv(void *pvParameters) {
         Serial.print("Returning bytes: ");
         Serial.write(buf, i + 1);
         Serial.println("");
-        //Serial.write(msg, i + 1);
+        Serial3.write(buf, i + 1);         // RPi Serial
         Serial.println("Success");
       }
       else if ( ( (buf[2] & 0b11) == final2Bits_SFrame) && isFrameCorrect(&buf[0], 'S') ) { // is an S-Frame, verify its correct
         // Check whether need to resend data
         // Trim to only frame[3:2]]. If true, RPi rejected the frame sent by Arduino, must resend
         uint8_t RPiReceive = (buf[1] >> 1) & (BUFFER_SIZE - 1);
-        recv_seq = (recv_seq + 1) & 0x7F;     // keeps recv_seq between 0 - 127
+        recv_seq = (recv_seq + 1) & 0x7F;                       // keeps recv_seq between 0 - 127 to fit within control_byte
         byte SFrameType = (buf[2] >> 2) & 0b11;
         if (SFrameType == SFRAME_REJ) {
           Serial.print("RPi has not received all frames, resending frames "); Serial.print(RPiReceive); Serial.print(" to "); Serial.println(lastSent);
@@ -406,7 +403,7 @@ bool isFrameCorrect(byte* buf, char type) {
   // Calculates the length of buf. Also START byte check.
   byte len;
   if (buf[0] != START_STOP_BYTE)  return false; // does not start with START byte, fail
-  else                  len = 1;      // start with the first data byte
+  else                            len = 1;      // start with the first data byte
 
   while (buf[len] != START_STOP_BYTE && len < 100) { // Arbitary number 100 set to prevent infinite loop in case frame does not terminate properly
     len++;
@@ -440,17 +437,13 @@ uint16_t crc16(char* buf, int len) {
   for (int byte = 0; byte < len; ++byte) {
     remainder ^= (buf[byte] << 8);
     for (uint8_t bit = 8; bit > 0; --bit) {
-      if (remainder & 0x8000) {
-        remainder = (remainder << 1) ^ poly;
-      } else {
-        remainder = (remainder << 1);
-      }
+      if (remainder & 0x8000) remainder = (remainder << 1) ^ poly;
+      else                    remainder = (remainder << 1);
     }
   }
   return remainder;
 }
 
-void loop()
-{
+void loop() {
   // Empty. Things are done in Tasks.
 }
