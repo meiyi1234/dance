@@ -1,3 +1,4 @@
+// BUG: Checksum calculation fks up because send_seq goes to 0, recognized as NULL character.
 #include <Wire.h>
 
 #include <Arduino_FreeRTOS.h>
@@ -18,10 +19,10 @@ const byte final2Bits_SFrame = 0x01;
 #define VOUT              A2
 #define NUM_GY521         3
 #define BAUD_RATE         115200
-#define BUFFER_SIZE       32
+#define BUFFER_SIZE       16
 #define MIN_IFRAME_LENGTH 50
 #define MAX_IFRAME_LENGTH 135
-const TickType_t xDelay = 100 / portTICK_PERIOD_MS;    // 100ms - Period of TaskReadSensors
+const TickType_t xDelay = 200 / portTICK_PERIOD_MS;    // 200ms - Period of TaskReadSensors
 
 unsigned long startTime;
 uint8_t send_seq = 1, recv_seq = 0; // used for filling in control byte fields when sending frames
@@ -152,6 +153,7 @@ uint16_t writeEscaped(char* buf, uint16_t write_start, char* data) {
     else {
       buf[pos++] = byt;
     }
+    Serial.print("buf[pos - 1] is "); Serial.println(buf[pos - 1]);
   }
   buf[pos] = '\0';
   return pos - write_start;
@@ -164,9 +166,9 @@ void TaskReadSensors(void *pvParameters) {
   int GyX[NUM_GY521], GyY[NUM_GY521], GyZ[NUM_GY521];
   int voltMeasurement, currentMeasurement;
   float voltVal, currentVout, currentVal, powerVal, energyVal = 0;
-  char controlBuffer[5];           // a buffer to store the control_bytes when they are escaped.
+  char controlBuffer[6];           // a buffer to store the control_bytes when they are escaped.
   char voltStr[8], currentStr[8], powerStr[8], energyStr[8];
-  char control_chars[3], check_chars[3];
+  char control_chars[4], check_chars[3];
   unsigned long currentTime, timeDelta;  // startTime defined globallly
   uint16_t qmsg;
 
@@ -221,16 +223,17 @@ void TaskReadSensors(void *pvParameters) {
     dtostrf(energyVal, 0, 1, energyStr);
 
     // Package into I-frame
-    buf_len = 0;
+    buf_len = controlBytes_len = 0;
     buf_len += sprintf(send_buf[buf_idx] + buf_len,
                        "%c%c",
-                       '\0', '\0');
+                       'x', 'x');
 
     // Recv, send seq
     control_chars[0] = (recv_seq << 1) | 0x1;
     control_chars[1] = send_seq << 1;
     control_chars[2] = '\0';
     controlBytes_len += writeEscaped(controlBuffer, controlBytes_len, control_chars);
+    Serial.print("control_chars is "); Serial.write(control_chars); Serial.println("");
     Serial.print("controlBuffer contains: "); Serial.write(controlBuffer); Serial.println("");
     Serial.print("controlBytes_len is "); Serial.println(controlBytes_len);
 
@@ -250,15 +253,19 @@ void TaskReadSensors(void *pvParameters) {
                        "%s,%s,%s,%s",
                        voltStr, currentStr, powerStr, energyStr);
 
+    
     // Checksum
     checksum = crc16(&send_buf[buf_idx][2], buf_len - 2);   // Exclude the NULL characters in front
+    Serial.print("Checksum is "); Serial.println(checksum);
     check_chars[0] = checksum >> 8;
     check_chars[1] = checksum & 0xFF;
     check_chars[2] = '\0';
     // Escape checksum if contains 7D/7E
     buf_len += writeEscaped(send_buf[buf_idx], buf_len, check_chars);
+    Serial.print("send_buf before including escape bytes is: "); Serial.write(send_buf[buf_idx]);
 
-    qmsg = (controlBytes_len - 2) << 8 | buf_idx;
+    qmsg = (4 - controlBytes_len) << 8 | buf_idx; // The front 8 bytes tells the offset.
+    Serial.print("qmsg is "); Serial.println(qmsg);
 
     // Write the Escape bytes in front if required
     if (controlBytes_len == 3) {      // 1 control byte escaped
@@ -317,11 +324,14 @@ void TaskSend(void *pvParameters) {
     Serial.println("");
 
     Serial3.write(START_STOP_BYTE);             // RPi Serial
-    len = strlen(send_buf[buf_read_idx]);
+    len = strlen(&send_buf[buf_read_idx][qmsg >> 8]);
     Serial.print("send_buf["); Serial.print(buf_read_idx); Serial.print("] is of length "); Serial.println(len);
 
     // Escape before sending
     Serial3.write(&send_buf[buf_read_idx][qmsg >> 8], len); // RPi Serial
+    Serial.print("Offset is "); Serial.println(qmsg >> 8);
+    Serial.print("send_buf after including escape bytes with offset: "); Serial.write(&send_buf[buf_read_idx][qmsg >> 8], len); Serial.println("");
+    Serial.print("send_buf after including escape bytes w/o offset: "); Serial.write(send_buf[buf_read_idx]); Serial.println("");
     Serial3.write(START_STOP_BYTE);                         // RPi Serial
     lastSent = (lastSent + 1) & (BUFFER_SIZE - 1);
     xSemaphoreGive(xSerialSemaphore);
@@ -363,7 +373,6 @@ void TaskRecv(void *pvParameters) {
         // Check whether need to resend data
         // Trim to only frame[3:2]]. If true, RPi rejected the frame sent by Arduino, must resend
         uint8_t RPiReceive = (buf[1] >> 1) & (BUFFER_SIZE - 1);
-        recv_seq = (recv_seq + 1) & 0x7F;                       // keeps recv_seq between 0 - 127 to fit within control_byte
         byte SFrameType = (buf[2] >> 2) & 0b11;
         if (SFrameType == SFRAME_REJ) {
           Serial.print("RPi has not received all frames, resending frames "); Serial.print(RPiReceive); Serial.print(" to "); Serial.println(lastSent);
