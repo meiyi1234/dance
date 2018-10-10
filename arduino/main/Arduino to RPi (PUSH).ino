@@ -21,7 +21,7 @@ const byte final2Bits_SFrame = 0x01;
 #define BUFFER_SIZE       32
 #define MIN_IFRAME_LENGTH 50
 #define MAX_IFRAME_LENGTH 135
-const TickType_t xDelay = 1000 / portTICK_PERIOD_MS;    // 10ms - Period of TaskReadSensors
+const TickType_t xDelay = 100 / portTICK_PERIOD_MS;    // 100ms - Period of TaskReadSensors
 
 unsigned long startTime;
 uint8_t send_seq = 1, recv_seq = 0; // used for filling in control byte fields when sending frames
@@ -44,10 +44,10 @@ void setup() {
   pinMode(VOUT, INPUT);         // INA169 VOut
 
   Serial.begin(BAUD_RATE);  // PC Serial
-  Serial3.begin(BAUD_RATE);  // RPi Serial 
+  Serial3.begin(BAUD_RATE);  // RPi Serial
   Serial.println("Ready");
 
-  xSerialSendQueue = xQueueCreate(BUFFER_SIZE, sizeof(uint8_t));
+  xSerialSendQueue = xQueueCreate(BUFFER_SIZE, sizeof(uint16_t));
   xSerialSemaphore = xSemaphoreCreateMutex();
   xSemaphoreGive(xSerialSemaphore);
 
@@ -159,13 +159,16 @@ uint16_t writeEscaped(char* buf, uint16_t write_start, char* data) {
 
 void TaskReadSensors(void *pvParameters) {
   uint16_t buf_len, checksum;
+  uint8_t controlBytes_len = 0;    // Calculates control_bytes length
   int AcX[NUM_GY521], AcY[NUM_GY521], AcZ[NUM_GY521];
   int GyX[NUM_GY521], GyY[NUM_GY521], GyZ[NUM_GY521];
   int voltMeasurement, currentMeasurement;
   float voltVal, currentVout, currentVal, powerVal, energyVal = 0;
+  char controlBuffer[5];           // a buffer to store the control_bytes when they are escaped.
   char voltStr[8], currentStr[8], powerStr[8], energyStr[8];
   char control_chars[3], check_chars[3];
   unsigned long currentTime, timeDelta;  // startTime defined globallly
+  uint16_t qmsg;
 
   TickType_t prevWakeTime = xTaskGetTickCount();
   for (;;) {
@@ -173,9 +176,9 @@ void TaskReadSensors(void *pvParameters) {
       Serial.println("No more free buffer space!");
       vTaskDelayUntil(&prevWakeTime, xDelay);
       continue;
-    }*/
+      }*/
     xSemaphoreTake(xSerialSemaphore, portMAX_DELAY);
-    
+
     for (uint8_t i = 0; i < NUM_GY521; i++) {
       digitalWrite(5, HIGH);
       digitalWrite(6, HIGH);
@@ -219,13 +222,21 @@ void TaskReadSensors(void *pvParameters) {
 
     // Package into I-frame
     buf_len = 0;
-    
+    buf_len += sprintf(send_buf[buf_idx] + buf_len,
+                       "%c%c",
+                       '\0', '\0');
+
     // Recv, send seq
     control_chars[0] = (recv_seq << 1) | 0x1;
     control_chars[1] = send_seq << 1;
     control_chars[2] = '\0';
-    // Escape if contains 7D/7E
-    buf_len += writeEscaped(send_buf[buf_idx], buf_len, control_chars);
+    controlBytes_len += writeEscaped(controlBuffer, controlBytes_len, control_chars);
+    Serial.print("controlBuffer contains: "); Serial.write(controlBuffer); Serial.println("");
+    Serial.print("controlBytes_len is "); Serial.println(controlBytes_len);
+
+    buf_len += sprintf(send_buf[buf_idx] + buf_len,
+                       "%s",
+                       control_chars);
 
     // Sensor reading - no need to escape since str won't contain ascii 7D={ or 7E=~
     for (uint8_t i = 0; i < NUM_GY521; i++) {
@@ -240,16 +251,31 @@ void TaskReadSensors(void *pvParameters) {
                        voltStr, currentStr, powerStr, energyStr);
 
     // Checksum
-    checksum = crc16(&send_buf[buf_idx][0], buf_len);
+    checksum = crc16(&send_buf[buf_idx][2], buf_len - 2);   // Exclude the NULL characters in front
     check_chars[0] = checksum >> 8;
     check_chars[1] = checksum & 0xFF;
     check_chars[2] = '\0';
     // Escape checksum if contains 7D/7E
     buf_len += writeEscaped(send_buf[buf_idx], buf_len, check_chars);
 
-    // TaskSend handles sending data
-    xQueueSend(xSerialSendQueue, &buf_idx, portMAX_DELAY);
+    qmsg = (controlBytes_len - 2) << 8 | buf_idx;
 
+    // Write the Escape bytes in front if required
+    if (controlBytes_len == 3) {      // 1 control byte escaped
+      send_buf[buf_idx][1] = controlBuffer[0];
+      send_buf[buf_idx][2] = controlBuffer[1];
+      send_buf[buf_idx][3] = controlBuffer[2];
+    }
+    else if (controlBytes_len == 4) { // 2 control bytes escaped
+      send_buf[buf_idx][0] = controlBuffer[0];
+      send_buf[buf_idx][1] = controlBuffer[1];
+      send_buf[buf_idx][2] = controlBuffer[2];
+      send_buf[buf_idx][3] = controlBuffer[3];
+    }
+    // TaskSend handles sending data
+    xQueueSend(xSerialSendQueue, &qmsg, portMAX_DELAY);
+
+    Serial.print("Send Sequence is: "); Serial.println(send_seq);
     freeBuffer -= 1;
     buf_idx = (buf_idx + 1) & (BUFFER_SIZE - 1);
     send_seq = (send_seq + 1) & 0x7F;             // Keeps the sequence number between 0 - 127 to fit into control_byte
@@ -278,13 +304,14 @@ void TaskReadSensors(void *pvParameters) {
 
 
 void TaskSend(void *pvParameters) {
-  uint8_t buf_read_idx, byt;
-  uint16_t len;
+  uint8_t byt, buf_read_idx;
+  uint16_t len, qmsg;
 
   for (;;) {
-    xQueueReceive(xSerialSendQueue, &buf_read_idx, portMAX_DELAY);
+    xQueueReceive(xSerialSendQueue, &qmsg, portMAX_DELAY);
     xSemaphoreTake(xSerialSemaphore, portMAX_DELAY);
 
+    buf_read_idx = qmsg & 0xFF;
     Serial.print("Received buf index: "); Serial.println(buf_read_idx);
     Serial.write(send_buf[buf_read_idx]);
     Serial.println("");
@@ -294,8 +321,8 @@ void TaskSend(void *pvParameters) {
     Serial.print("send_buf["); Serial.print(buf_read_idx); Serial.print("] is of length "); Serial.println(len);
 
     // Escape before sending
-    Serial3.write(send_buf[buf_read_idx], len); // RPi Serial
-    Serial3.write(START_STOP_BYTE);             // RPi Serial
+    Serial3.write(&send_buf[buf_read_idx][qmsg >> 8], len); // RPi Serial
+    Serial3.write(START_STOP_BYTE);                         // RPi Serial
     lastSent = (lastSent + 1) & (BUFFER_SIZE - 1);
     xSemaphoreGive(xSerialSemaphore);
   }
