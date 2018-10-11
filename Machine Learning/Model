@@ -1,0 +1,81 @@
+# data analysis
+import pandas as pd
+
+# plot tool
+import matplotlib.pyplot as plt
+
+# machine learning tools
+from sklearn.model_selection import train_test_split
+
+from sklearn.svm import SVC
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.tree import DecisionTreeClassifier
+
+# Neural Network model
+from sklearn.neural_network import MLPClassifier
+# from sklearn.svm import MLPClassifier
+# from sklearn.tree import MLPClassifier
+
+import pickle
+# Evalute the speed of model
+import datetime
+
+#raw_df = pd.read_csv('C:/Users/WEARE1/Desktop/cg3002/Machine Learning/cleaned_dataset.csv')
+raw_df = pd.read_csv('C:/Users/WEARE1/Desktop/cg3002/Machine Learning/cleaned_dataset.csv')
+
+X = raw_df.drop(['activity'], axis=1)
+y = raw_df['activity'].copy()
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=0)
+
+# Model 2: Support Vector Machines
+svc = SVC()
+svc.fit(X_train, y_train)
+print("The training accuracy for Support Vector Machines is ", svc.score(X_train, y_train))
+print("The testing accuracy for Support Vector Machines is ", svc.score(X_test, y_test))
+
+# Model 3: Random Forestry
+random_forest = RandomForestClassifier(n_estimators=30)
+random_forest.fit(X_train, y_train)
+print("The training accuracy for Random Forestry is ", random_forest.score(X_train, y_train))
+print("The testing accuracy for Random Forestry is ", random_forest.score(X_test, y_test))
+
+
+# Model 4: Decision Tree
+decision_tree = DecisionTreeClassifier()
+decision_tree.fit(X_train, y_train)
+print("The training accuracy for Decision Tree is ", decision_tree.score(X_train, y_train))
+print("The testing accuracy for Decision Tree is ", decision_tree.score(X_test, y_test))
+
+# filenameSVM = "Support_Vector_Machines_Model.sav"
+# filenameRF = "Random_Forestry_Model.sav"
+# filenameDT = "Decision_Tree_Model.sav"
+# pickle.dump(svc, open(filenameSVM, 'wb'))
+# pickle.dump(random_forest, open(filenameRF, 'wb'))
+# pickle.dump(decision_tree, open(filenameDT, 'wb'))
+
+# #print("The amount of test data: ", int(len(data.index) * test_data_ratio))
+
+# a = datetime.datetime.now()
+# print("The testing accuracy for imported Neural Network is ", mlp_model.score(X_test, y_test))
+# b = datetime.datetime.now()
+# c = b - a
+# print("time taken for Neural Network = ", c)
+
+# a = datetime.datetime.now()
+# print("The testing accuracy for imported Support Vector Machines is ", svc_model.score(X_test, y_test))
+# b = datetime.datetime.now()
+# c = b - a
+# print("time taken for Support Vector Machines = ", c)
+
+
+# a = datetime.datetime.now()
+# print("The testing accuracy for imported Random Forestry is ", rd_model.score(X_test, y_test))
+# b = datetime.datetime.now()
+# c = b - a
+# print("time taken for Random Forestry = ", c)
+
+# a = datetime.datetime.now()
+# #print("The testing accuracy for imported Decision Tree is ", dt_model.score(X_test, y_test))
+# b = datetime.datetime.now()
+# c = b - a
+# print("time taken for Decision Tree = ", c)
