@@ -19,17 +19,13 @@ class Frame:
     CONTROL_MASK = BitArray('0x0003')
     SFRAME_MASK = BitArray('0x000C')
 
-    def __init__(self, bitarr, info, escaped):
+    def __init__(self, bitarr, info):
         """Stores escaped frame in self.bytes and unescaped frame in self.bitarr.
         Other useful fields such as control and checksum are also stored as instance
         members.
         """
-        if escaped:
-            self.bytes = bitarr.bytes
-            self.bitarr = BitArray(Frame.unescape(bitarr.bytes))
-        else:
-            self.bytes = Frame.escape(bitarr.bytes)   # type bytes. Contains full, escaped frame
-            self.bitarr = bitarr          # type bitarr. Contains unescaped frame, no start/stop bytes
+        self.bytes = Frame.escape(bitarr.bytes)   # type bytes. Contains full, escaped frame
+        self.bitarr = bitarr          # type bitarr. Contains unescaped frame, with start/stop bytes
 
         self.control = self.bitarr[8:24]   # type bitarr
         self.recv_seq = self.control[0:7].uint
@@ -94,27 +90,26 @@ class Frame:
         one complete frame, including start and stop bytes.
         Frame returned is of type Frame, not its subclass.
         """
-        print('bytes_ len: {}'.format(len(bytes_)))
         if (bytes_[0] != START_STOP_BYTE or bytes_[-1] != START_STOP_BYTE):
             raise ValueError('Message does not contain either start byte, stop byte, or both')
 
-        bitarr = BitArray(bytes_)
+        bitarr = BitArray(Frame.unescape(bytes_))
         control = bitarr[8:24]
         sort = Frame.get_frame_sort(control)
         if sort == Frame.Sort.I:
-            frame = Frame(bitarr, info=True, escaped=True)
+            frame = Frame(bitarr, info=True)
             frame.__class__ = IFrame
             frame.SORT = Frame.Sort.I
             frame.send_seq = control[8:15].uint
 
         elif sort == Frame.Sort.S:
-            frame = Frame(bitarr, info=False, escaped=True)
+            frame = Frame(bitarr, info=False)
             frame.__class__ = SFrame
             frame.SORT = Frame.Sort.S
             frame.TYPE = Frame.get_sframe_type(control)
 
         elif sort == Frame.Sort.H:
-            frame = Frame(bitarr, info=False, escaped=True)
+            frame = Frame(bitarr, info=False)
             frame.__class__ = HFrame
             frame.SORT = Frame.Sort.H
 
@@ -164,7 +159,7 @@ class IFrame(Frame):
             START_STOP_BYTE
         ))
 
-        super().__init__(bitarr, info=True, escaped=False)
+        super().__init__(bitarr, info=True)
 
     def to_ascii(self):
         return self.info.decode('ascii')
@@ -202,7 +197,7 @@ class SFrame(Frame):
             START_STOP_BYTE
         ))
 
-        super().__init__(bitarr, info=False, escaped=False)
+        super().__init__(bitarr, info=False)
 
 
 class HFrame(Frame):
@@ -229,4 +224,4 @@ class HFrame(Frame):
             START_STOP_BYTE                      # 0x7E
         ))
 
-        super().__init__(bitarr, info=False, escaped=False)
+        super().__init__(bitarr, info=False)
