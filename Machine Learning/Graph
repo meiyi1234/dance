@@ -1,0 +1,30 @@
+SENSOR_DATA_COLUMNS = ['mean_acc_x','mean_acc_y','mean_acc_z','mean_gyro_x','mean_gyro_y','mean_gyro_z'
+                       ,'std_acc_x','std_acc_y','std_acc_z','std_gyro_x','std_gyro_y','std_gyro_z']
+
+
+# # populate dataframe with 'left' wrist only
+# df_left_wrist_data = pd.DataFrame()
+# df_left_wrist_data = raw_df[raw_df.wrist == 0]
+
+# # populate dataframe with 'right' wrist only
+# df_right_wrist_data = pd.DataFrame()
+# df_right_wrist_data = raw_df[raw_df.wrist == 1]
+
+# populate dataframe with 'walk' data only
+df_walk_data = pd.DataFrame()
+df_walk_data = raw_df[(raw_df.activity == 0)]
+
+# populate dataframe with 'run' data only 
+df_run_data = pd.DataFrame()
+df_run_data = raw_df[(raw_df.activity == 1)]
+
+import seaborn as sns
+for c in SENSOR_DATA_COLUMNS:
+    plt.figure(figsize=(10,5))
+    plt.title("Sensor data distribution for both wrists")
+#     sns.distplot(df_left_wrist_data[c], label='left')
+#     sns.distplot(df_right_wrist_data[c], label='right')
+    sns.distplot(df_walk_data[c], label='walk')
+    sns.distplot(df_run_data[c], label='run')
+    plt.legend()
+    plt.show()
