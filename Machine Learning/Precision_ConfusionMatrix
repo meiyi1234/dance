@@ -1,0 +1,32 @@
+import itertools
+import numpy as np
+import matplotlib.pyplot as plt
+
+from sklearn import svm
+from sklearn import tree, datasets
+from sklearn.metrics import confusion_matrix
+from sklearn.metrics import classification_report
+
+# Run classifier, using a model that is too regularized (C too low) to see
+# the impact on the results
+svm_classifier = svm.SVC(kernel='linear', C=0.01)
+dt_classifier = tree.DecisionTreeClassifier(criterion='entropy', max_depth=3,min_samples_leaf=5)
+y_pred = svm_classifier.fit(X_train, y_train).predict(X_test)
+y_pred2 = dt_classifier.fit(X_train, y_train).predict(X_test)
+
+svm_predict = svm_classifier.predict(X_test)
+dt_predict= dt_classifier.predict(X_test)
+
+cm_SVM= confusion_matrix(y_test, svm_predict)
+cm_DT = confusion_matrix(y_test, dt_predict)
+target_names = ['walk','run']
+
+print("SVM")
+print(cm_SVM)
+print("DT")
+print(cm_DT)
+
+print("SVM")
+print(classification_report(y_test,svm_predict, target_names=target_names))
+print("DT")
+print(classification_report(y_test,dt_predict, target_names=target_names))
