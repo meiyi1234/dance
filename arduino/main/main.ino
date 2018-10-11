@@ -3,6 +3,21 @@
 #include <Arduino_FreeRTOS.h>
 #include <semphr.h>
 
+#define DEBUG 0  // Set to 0 in production code
+
+// Print macros
+#ifdef DEBUG
+  #define DEBUG_BEGIN(x)      Serial.begin(x)
+  #define DEBUG_PRINT(x)      Serial.print(x)
+  #define DEBUG_PRINTLN(x)    Serial.println(x)
+  #define DEBUG_WRITE(...)    Serial.write(__VA_ARGS__)
+#else
+  #define DEBUG_BEGIN(x)
+  #define DEBUG_PRINT(x)
+  #define DEBUG_PRINTLN(x)
+  #define DEBUG_WRITE(...)
+#endif
+
 // Fixed constants - DO NOT TOUCH.
 #define START_STOP_BYTE 0x7E
 #define ESCAPE_BYTE     0x7D
@@ -21,7 +36,7 @@ const byte final2Bits_SFrame = 0x01;
 #define BUFFER_SIZE       16
 #define MIN_IFRAME_LENGTH 50
 #define MAX_IFRAME_LENGTH 128
-const TickType_t xDelay = 200 / portTICK_PERIOD_MS;    // 200ms - Period of TaskReadSensors
+const TickType_t xDelay = 10 / portTICK_PERIOD_MS;    // 200ms - Period of TaskReadSensors
 
 unsigned long startTime;
 uint8_t send_seq = 1, recv_seq = 0; // used for filling in control byte fields when sending frames
@@ -43,9 +58,9 @@ void setup() {
   pinMode(VOLT_DIVIDER, INPUT); // Voltage Divider output
   pinMode(VOUT, INPUT);         // INA169 VOut
 
-  Serial.begin(BAUD_RATE);  // PC Serial
+  DEBUG_BEGIN(BAUD_RATE);  // PC Serial
   Serial3.begin(BAUD_RATE);  // RPi Serial
-  Serial.println("Ready");
+  DEBUG_PRINTLN("Ready");
 
   xSerialSendQueue = xQueueCreate(BUFFER_SIZE, sizeof(uint32_t));
   xSerialSemaphore = xSemaphoreCreateMutex();
@@ -55,10 +70,10 @@ void setup() {
   setupSensors();
 
   xTaskCreate(TaskReadSensors, "Read sensors", 512, NULL, 4, NULL); // Highest priority
-  xTaskCreate(TaskSend, "Serial send", 512, NULL, 3, NULL);
+  xTaskCreate(TaskSend, "Serial send", 256, NULL, 3, NULL);
   xTaskCreate(TaskRecv, "Serial recv", 512, NULL, 2, NULL);         // Lower priority, just receives acks
 
-  Serial.println("Starting scheduler");
+  DEBUG_PRINTLN("Starting scheduler");
   vTaskStartScheduler();
 }
 
@@ -76,7 +91,7 @@ void establishContact() {
     msg[++i] = Serial3.read();         // RPi Serial
 
     if (i == 0 && msg[i] != START_STOP_BYTE) { // If receiving first byte but is not START byte
-      Serial.println("Error, frame doesnt start with 0x7e");
+      DEBUG_PRINTLN("Error, frame doesnt start with 0x7e");
       i = -1;
       expectStopByte = false;
       memset(msg, NULL, 1);
@@ -85,9 +100,9 @@ void establishContact() {
       expectStopByte = true;                        // this is the START byte, the next such byte should be START_STOP_BYTE byte
     }
     else if (msg[i] == START_STOP_BYTE && expectStopByte) {  // If receiving START_STOP_BYTE byte
-      Serial.println("Frame terminated, expect receive H-Frame");
+      DEBUG_PRINTLN("Frame terminated, expect receive H-Frame");
       if (!isFrameCorrect(msg, 'H')) {
-        Serial.println("H-frame invalid, not doing anything");
+        DEBUG_PRINTLN("H-frame invalid, not doing anything");
         expectStopByte = false;
         memset(msg, NULL, i + 1);
         i = -1;
@@ -95,11 +110,11 @@ void establishContact() {
       }
       else {
         // If handshake, repeat message back to primary
-        Serial.print("Returning bytes: ");
-        Serial.write(msg, i + 1);
-        Serial.println("");
+        DEBUG_PRINT("Returning bytes: ");
+        DEBUG_WRITE(msg, i + 1);
+        DEBUG_PRINTLN("");
         Serial3.write(msg, i + 1);          // RPi Serial
-        Serial.println("Success");
+        DEBUG_PRINTLN("Success");
         handshake = true;
         recv_seq = (recv_seq + 1) & 0x7F;   // Keeps the sequence number between 0 - 127 to fit into control_byte
 
@@ -109,7 +124,7 @@ void establishContact() {
       }
     }
     else {  // receiving the other bytes in between
-      Serial.print("byte is "); Serial.write(msg[i]); Serial.println("");
+      DEBUG_PRINT("byte is "); DEBUG_WRITE(msg[i]); DEBUG_PRINTLN("");
     }
     delay(10);
   }
@@ -173,7 +188,7 @@ void TaskReadSensors(void *pvParameters) {
   TickType_t prevWakeTime = xTaskGetTickCount();
   for (;;) {
     /*if (freeBuffer <= 0) {  // if no free buffer space left, stop reading new values
-      Serial.println("No more free buffer space!");
+      DEBUG_PRINTLN("No more free buffer space!");
       vTaskDelayUntil(&prevWakeTime, xDelay);
       continue;
       }*/
@@ -232,15 +247,10 @@ void TaskReadSensors(void *pvParameters) {
     control_chars[2] = '\0';
     // specify data len so write escape doesn't terminate early on send seq 0 = \0
     controlBytes_len += writeEscaped(controlBuffer, controlBytes_len, control_chars, 2);
-    Serial.print("control_chars is "); Serial.write(control_chars); Serial.println("");
-    Serial.print("controlBuffer contains: "); Serial.write(controlBuffer); Serial.println("");
-    Serial.print("controlBytes_len is "); Serial.println(controlBytes_len);
 
     buf_len += sprintf(send_buf[buf_idx] + buf_len,
                        "%c%c",
                        control_chars[0], control_chars[1]);
-
-    Serial.print("--------- buf after ctrl chars: "); Serial.write(send_buf[buf_idx], buf_len); Serial.println("");
 
     // Sensor reading - no need to escape since str won't contain ascii 7D={ or 7E=~
     for (uint8_t i = 0; i < NUM_GY521; i++) {
@@ -257,13 +267,12 @@ void TaskReadSensors(void *pvParameters) {
 
     // Checksum
     checksum = crc16(&send_buf[buf_idx][2], buf_len - 2);   // Exclude the NULL characters in front
-    Serial.print("Checksum is "); Serial.println(checksum);
     check_chars[0] = checksum >> 8;
     check_chars[1] = checksum & 0xFF;
     check_chars[2] = '\0';
     // Escape checksum if contains 7D/7E
     buf_len += writeEscaped(send_buf[buf_idx], buf_len, check_chars, 2);
-    Serial.print("send_buf before including escape bytes is: "); Serial.write(send_buf[buf_idx]); Serial.println("");
+    DEBUG_PRINT("send_buf before including escape bytes is: "); DEBUG_WRITE(send_buf[buf_idx]); DEBUG_PRINTLN("");
 
     // Write the Escape bytes in front if required
     if (controlBytes_len == 3) {      // 1 control byte escaped
@@ -281,8 +290,7 @@ void TaskReadSensors(void *pvParameters) {
     buf_len -= (4 - controlBytes_len);
 
     qmsg = (unsigned long)(4 - controlBytes_len) << 24 | (unsigned long)buf_idx << 16 | buf_len;   // 1 byte offset, 1 byte index, 2 bytes len
-    Serial.print("offset is "); Serial.println(4 - controlBytes_len);
-    Serial.print("qmsg is "); Serial.println(qmsg);
+    DEBUG_PRINT("offset is "); DEBUG_PRINTLN(4 - controlBytes_len);
 
     freeBuffer -= 1;
     buf_idx = (buf_idx + 1) & (BUFFER_SIZE - 1);
@@ -292,21 +300,21 @@ void TaskReadSensors(void *pvParameters) {
     xQueueSend(xSerialSendQueue, &qmsg, portMAX_DELAY);
 
     // TODO: remove
-    for (uint8_t i = 0; i < NUM_GY521; i++) {
-      Serial.print(i); Serial.print(" | ");
-      Serial.print("AcX = ");      Serial.print(AcX[i]);
-      Serial.print(" | AcY = ");   Serial.print(AcY[i]);
-      Serial.print(" | AcZ = ");   Serial.print(AcZ[i]);
-      Serial.print(" | GyX = ");   Serial.print(GyX[i]);
-      Serial.print(" | GyY = ");   Serial.print(GyY[i]);
-      Serial.print(" | GyZ = "); Serial.println(GyZ[i]);
-    }
+    // for (uint8_t i = 0; i < NUM_GY521; i++) {
+    //   DEBUG_PRINT(i); DEBUG_PRINT(" | ");
+    //   DEBUG_PRINT("AcX = ");      DEBUG_PRINT(AcX[i]);
+    //   DEBUG_PRINT(" | AcY = ");   DEBUG_PRINT(AcY[i]);
+    //   DEBUG_PRINT(" | AcZ = ");   DEBUG_PRINT(AcZ[i]);
+    //   DEBUG_PRINT(" | GyX = ");   DEBUG_PRINT(GyX[i]);
+    //   DEBUG_PRINT(" | GyY = ");   DEBUG_PRINT(GyY[i]);
+    //   DEBUG_PRINT(" | GyZ = "); DEBUG_PRINTLN(GyZ[i]);
+    // }
 
-    Serial.print("Voltage(V) = ");        Serial.print(voltVal);
-    Serial.print(" | Current(mA) = "); Serial.print(currentVal);
-    Serial.print(" | Power(mW) = ");     Serial.print(powerVal);
-    Serial.print(" | Energy(J) = ");  Serial.println(energyVal);
-    Serial.print("Checksum: "); Serial.println(checksum);
+    // DEBUG_PRINT("Voltage(V) = ");        DEBUG_PRINT(voltVal);
+    // DEBUG_PRINT(" | Current(mA) = "); DEBUG_PRINT(currentVal);
+    // DEBUG_PRINT(" | Power(mW) = ");     DEBUG_PRINT(powerVal);
+    // DEBUG_PRINT(" | Energy(J) = ");  DEBUG_PRINTLN(energyVal);
+    // DEBUG_PRINT("Checksum: "); DEBUG_PRINTLN(checksum);
 
     xSemaphoreGive(xSerialSemaphore);
     vTaskDelayUntil(&prevWakeTime, xDelay);
@@ -327,16 +335,16 @@ void TaskSend(void *pvParameters) {
     buf_read_idx = (qmsg >> 16) & 0xFF;
     len = qmsg & 0xFFFF;
 
-    Serial.print("Send Sequence is: "); Serial.println(send_seq);
-    Serial.print("send_buf["); Serial.print(buf_read_idx); Serial.print("] is of length "); Serial.println(len);
+    DEBUG_PRINT("Send Sequence is: "); DEBUG_PRINTLN(send_seq);
+    DEBUG_PRINT("send_buf["); DEBUG_PRINT(buf_read_idx); DEBUG_PRINT("] is of length "); DEBUG_PRINTLN(len);
 
     Serial3.write(START_STOP_BYTE);
     Serial3.write(&send_buf[buf_read_idx][offset], len);
     Serial3.write(START_STOP_BYTE);
 
-    Serial.print("Offset is "); Serial.println(offset);
-    Serial.print("send_buf after including escape bytes with offset: "); Serial.write(&send_buf[buf_read_idx][offset], len); Serial.println("");
-    Serial.print("send_buf after including escape bytes w/o offset: "); Serial.write(send_buf[buf_read_idx]); Serial.println("\n");
+    DEBUG_PRINT("Offset is "); DEBUG_PRINTLN(offset);
+    DEBUG_PRINT("send_buf after including escape bytes with offset: "); DEBUG_WRITE(&send_buf[buf_read_idx][offset], len); DEBUG_PRINTLN("");
+    DEBUG_PRINT("send_buf after including escape bytes w/o offset: "); DEBUG_WRITE(send_buf[buf_read_idx]); DEBUG_PRINTLN("\n");
     lastSent = (lastSent + 1) & (BUFFER_SIZE - 1);
     xSemaphoreGive(xSerialSemaphore);
   }
@@ -356,7 +364,7 @@ void TaskRecv(void *pvParameters) {
     }
     buf[++i] = Serial3.read();                     // RPi Serial
     if (i == 0 && buf[i] != START_STOP_BYTE) {    // if expecting starting byte but receive otherwise
-      Serial.println("Error, Frame does not start with 0x7e");
+      DEBUG_PRINTLN("Error, Frame does not start with 0x7e");
       i = -1;
       expectStopByte = false;
       memset(buf, NULL, 1);
@@ -365,13 +373,13 @@ void TaskRecv(void *pvParameters) {
       expectStopByte = true;
     }
     else if (buf[i] == START_STOP_BYTE && expectStopByte) {  // START_STOP_BYTE byte is received, terminate the frame
-      Serial.println("Frame terminated");
+      DEBUG_PRINTLN("Frame terminated");
       if (buf[2] == final2Bits_HFrame && isFrameCorrect(&buf[0], 'H')) {  // is a H-Frame, verify its correct
-        Serial.print("Returning bytes: ");
-        Serial.write(buf, i + 1);
-        Serial.println("");
+        DEBUG_PRINT("Returning bytes: ");
+        DEBUG_WRITE(buf, i + 1);
+        DEBUG_PRINTLN("");
         Serial3.write(buf, i + 1);         // RPi Serial
-        Serial.println("Success");
+        DEBUG_PRINTLN("Success");
       }
       else if ( ( (buf[2] & 0b11) == final2Bits_SFrame) && isFrameCorrect(&buf[0], 'S') ) { // is an S-Frame, verify its correct
         // Check whether need to resend data
@@ -379,7 +387,7 @@ void TaskRecv(void *pvParameters) {
         uint8_t RPiReceive = (buf[1] >> 1) & (BUFFER_SIZE - 1);
         byte SFrameType = (buf[2] >> 2) & 0b11;
         if (SFrameType == SFRAME_REJ) {
-          Serial.print("RPi has not received all frames, resending frames "); Serial.print(RPiReceive); Serial.print(" to "); Serial.println(lastSent);
+          DEBUG_PRINT("RPi has not received all frames, resending frames "); DEBUG_PRINT(RPiReceive); DEBUG_PRINT(" to "); DEBUG_PRINTLN(lastSent);
           if (RPiReceive > lastSent) {
             for (uint8_t i = RPiReceive; i < BUFFER_SIZE; i++) {
               xQueueSend(xSerialSendQueue, &i, portMAX_DELAY);
@@ -395,7 +403,7 @@ void TaskRecv(void *pvParameters) {
           }
         }
         else if ( (SFrameType == SFRAME_RR) || (SFrameType == SFRAME_RNR) ) {
-          Serial.print("RPi has successully received frames "); Serial.print((lastACK + 1) & (BUFFER_SIZE - 1)); Serial.print(" to "); Serial.println((RPiReceive - 1) & (BUFFER_SIZE - 1));
+          DEBUG_PRINT("RPi has successully received frames "); DEBUG_PRINT((lastACK + 1) & (BUFFER_SIZE - 1)); DEBUG_PRINT(" to "); DEBUG_PRINTLN((RPiReceive - 1) & (BUFFER_SIZE - 1));
           uint8_t firstACK = (lastACK + 1) & (BUFFER_SIZE - 1); // the first newly ACK frame
           lastACK = (RPiReceive == 0) ? (BUFFER_SIZE - 1) : (RPiReceive - 1);
           freeBuffer += ( (firstACK > lastACK) ? BUFFER_SIZE : 0) + lastACK - firstACK + 1;
@@ -414,7 +422,7 @@ void TaskRecv(void *pvParameters) {
             }
           }
           if (SFrameType == SFRAME_RNR) {
-            Serial.println("Waiting for RPi to finish operations...");
+            DEBUG_PRINTLN("Waiting for RPi to finish operations...");
             delay(200);     // RPi might be expanding its CircularBuffer, wait. TO-DO: Is RPi going to signal when its ready?
           }
         }
@@ -428,19 +436,19 @@ void TaskRecv(void *pvParameters) {
       //          iFrameMsg[i++] = buf[j];
       //        }
       //        iFrameMsg[i] = '\0';  // terminate the string properly
-      //        Serial.print("The I-Frame Message is: " ); Serial.println(iFrameMsg);
+      //        DEBUG_PRINT("The I-Frame Message is: " ); DEBUG_PRINTLN(iFrameMsg);
       //        // if(iFrameMsg.equals("send me data")) {   // Intepret the message sent in I-Frame
       //        // Send S-Frame back to RPi
-      //        Serial.println("I-Frame received! Sending S-Frame");
-      //        Serial.write(START_STOP_BYTE);
+      //        DEBUG_PRINTLN("I-Frame received! Sending S-Frame");
+      //        DEBUG_WRITE(START_STOP_BYTE);
       //        byte msg[2];
       //        msg[0] = buf[1];
       //        msg[1] = 0x01;
-      //        Serial.write(msg[0]);
-      //        Serial.write(msg[1]);
+      //        DEBUG_WRITE(msg[0]);
+      //        DEBUG_WRITE(msg[1]);
       //        int checkNum = crc16(&msg[0], 2);
-      //        Serial.write(checkNum);
-      //        Serial.write(START_STOP_BYTE);
+      //        DEBUG_WRITE(checkNum);
+      //        DEBUG_WRITE(START_STOP_BYTE);
       //      }
       memset(buf, NULL, i + 1);
       i = -1;
@@ -475,7 +483,7 @@ bool isFrameCorrect(byte* buf, char type) {
   //
 
   int checkNum = buf[len - 3] << 8 | buf[len - 2];
-  //Serial.print("Calc checksum is "); Serial.print(crc16(&buf[1], len - 4)); Serial.print(" vs input checksum is "); Serial.println(checkNum);
+  //DEBUG_PRINT("Calc checksum is "); DEBUG_PRINT(crc16(&buf[1], len - 4)); DEBUG_PRINT(" vs input checksum is "); DEBUG_PRINTLN(checkNum);
   return (buf[1] & 0b1) && isFrameCorrect && crc16(&buf[1], len - 4) == checkNum && buf[len - 1] == START_STOP_BYTE;
 }
 
@@ -483,8 +491,8 @@ uint16_t crc16(char* buf, int len) {
   char str1[5], str2[5];
   sprintf(str1, "%02X", buf[0]);
   sprintf(str2, "%02X", buf[len - 1]);
-  Serial.print("first byte: ");  Serial.print(str1);
-  Serial.print(", last byte: "); Serial.println(str2);
+  DEBUG_PRINT("first byte: ");  DEBUG_PRINT(str1);
+  DEBUG_PRINT(", last byte: "); DEBUG_PRINTLN(str2);
 
   uint16_t remainder = 0x0000;
   uint16_t poly = 0x1021;

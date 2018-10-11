@@ -59,7 +59,7 @@ class SerialProtocol(asyncio.Protocol):
             await self._secondary_ready.wait()  # Wait if RNR received
             data = await self.queue.get()
             self.transport.write(data)
-            print('Message sent: {}\n'.format(BitArray(data)))
+            # print('Message sent: {}\n'.format(BitArray(data)))
             if self._sending_iframe:
                 # Write to send buffer in case retransmission requested
                 self.send_buf[self.send_seq] = data
@@ -109,7 +109,7 @@ class SerialProtocol(asyncio.Protocol):
 
             if fr.SORT == Frame.Sort.H:
                 if fr.recv_seq == self.send_seq:   # Arduino echoed seq sent
-                    print('Received handshake ack, can now send data to the Arduino')
+                    # print('Received handshake ack, can now send data to the Arduino')
                     self._send_handshake_task.cancel()  # Stop sending handshake
                     self._ready.set()  # Enable sending messages
                     self._secondary_ready.set()
@@ -137,11 +137,11 @@ class SerialProtocol(asyncio.Protocol):
 
                 # Acknowledge receipt of I-frame
                 # TODO: ack every n frames?
-                print('Acknowledging I-frame')
+                # print('Acknowledging I-frame')
                 self._ack_iframe_ready.set()
 
             else:  # S-frame
-                print('Received S-frame')
+                # print('Received S-frame')
                 if fr.TYPE == SFrame.Type.RR:
                     self._secondary_ready.set()  # Let messages be sent
                     # All frames up to recv_seq acked, del
