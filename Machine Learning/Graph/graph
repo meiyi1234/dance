@@ -1,0 +1,55 @@
+# data analysis
+import pandas as pd
+
+# display graph
+import seaborn as sns
+
+# plot tool
+import matplotlib.pyplot as plt
+
+def DisplayGraph():
+
+    raw_df = pd.read_csv('C:/Users/WEARE1/Documents/extracted_dataset .csv')
+
+    SENSOR_DATA_COLUMNS = ['mean_AcX 1','mean_AcX 2','mean_AcX 3','mean_AcY 1','mean_AcY 2','mean_AcY 3','mean_AcZ 1','mean_AcZ 2','mean_AcZ 3',
+                       'mean_GyX 1','mean_GyX 2','mean_GyX 3','mean_GyY 1','mean_GyY 2','mean_GyY 3','mean_GyZ 1','mean_GyZ 2','mean_GyZ 3',
+                       'std_AcX 1','std_AcX 2','std_AcX 3','std_AcY 1','std_AcY 2','std_AcY 3','std_AcZ 1','std_AcZ 2','std_AcZ 3',
+                       'std_GyX 1','std_GyX 2','std_GyX 3','std_GyY 1','std_GyY 2','std_GyY 3','std_GyZ 1','std_GyZ 2','std_GyZ 3']
+
+
+
+    # populate dataframe with 'wiper' data only
+    df_wiper_data = pd.DataFrame()
+    df_wiper_data = raw_df[(raw_df.activity == 1)]
+
+    # populate dataframe with 'number7' data only 
+    df_number7_data = pd.DataFrame()
+    df_number7_data = raw_df[(raw_df.activity == 2)]
+
+    # populate dataframe with 'chicken' data only 
+    df_chicken_data = pd.DataFrame()
+    df_chicken_data = raw_df[(raw_df.activity == 3)]
+
+    # populate dataframe with 'sidestep' data only 
+    df_sidestep_data = pd.DataFrame()
+    df_sidestep_data = raw_df[(raw_df.activity == 4)]
+
+    # populate dataframe with 'turnclap' data only 
+    df_turnclap_data = pd.DataFrame()
+    df_turnclap_data = raw_df[(raw_df.activity == 5)]
+
+    import seaborn as sns
+    for c in SENSOR_DATA_COLUMNS:
+        plt.figure(figsize=(10,5))
+        plt.title("Sensor data distribution for both wrists")
+
+        sns.distplot(df_wiper_data[c], label='wiper')
+        sns.distplot(df_number7_data[c], label='number7')
+        sns.distplot(df_chicken_data[c], label='chicken')
+        sns.distplot(df_sidestep_data[c], label='sidestep')
+        sns.distplot(df_turnclap_data[c], label='turnclap')
+        plt.legend()
+        plt.show()
+
+
+DisplayGraph()
