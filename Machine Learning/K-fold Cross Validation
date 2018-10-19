@@ -1,7 +1,0 @@
-#Applying k-fold cross validation
-from sklearn.model_selection import KFold
-from sklearn.model_selection import cross_val_score
-accurancies_svm = cross_val_score(estimator=svc,X=X_train, y=y_train,cv=5)
-print(accurancies)
-accurancies_dt = cross_val_score(estimator=decision_tree,X=X_train, y=y_train,cv=5)
-print(accurancies_dt)
