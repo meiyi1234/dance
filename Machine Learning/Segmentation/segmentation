@@ -1,40 +1,20 @@
 # data analysis
 import pandas as pd
-import datetime
 import time
-
-import csv
-import glob
 
 # scale the data points
 from sklearn import preprocessing
 
 def DataProcessing():
     
-    start_time = datetime.datetime.now()
-
-    
     # read data
-    data = pd.read_csv('C:/Users/WEARE1/Desktop/cg3002/Machine Learning/wiper.csv',nrows = 110)
-    print(data)
- 
-    j = 0
+    data = pd.read_csv('C:/Users/WEARE1/Desktop/cg3002/Machine Learning/wiper.csv')
 
-    store_data = data[j:j+110].copy() 
-    data = data.drop(data.index[0:109],axis = 0)
-    
-    print("110 data",store_data)
-    print("cleaned head .head(110):")
-    print(data.head(110))
-    
-    
-    cleaned_data = store_data.drop(['voltage','current','power','energy'],axis =1) #delete column
-#     cleaned_data = pd.DataFrame(preprocessing.scale(data.drop(['voltage','current','power','energy'],axis =1)),
-#                                                    columns=['AcX 1', 'AcY 1', 'AcZ 1', 'GyX 1', 'GyY 1', 'GyZ 1', 
-#                                                             'AcX 2', 'AcY 2', 'AcZ 2', 'GyX 2', 'GyY 2', 'GyZ 2',
-#                                                             'AcX 3', 'AcY 3', 'AcZ 3', 'GyX 3', 'GyY 3', 'GyZ 3'])
-    
-
+    cleaned_data = data.drop(['voltage','current','power','energy'],axis =1) #delete column
+    cleaned_data = pd.DataFrame(preprocessing.scale(data.drop(['voltage','current','power','energy'],axis =1)),
+                                                   columns=['AcX 1', 'AcY 1', 'AcZ 1', 'GyX 1', 'GyY 1', 'GyZ 1', 
+                                                            'AcX 2', 'AcY 2', 'AcZ 2', 'GyX 2', 'GyY 2', 'GyZ 2',
+                                                            'AcX 3', 'AcY 3', 'AcZ 3', 'GyX 3', 'GyY 3', 'GyZ 3'])
     
     mean_data = pd.DataFrame() 
     std_data = pd.DataFrame() 
@@ -44,20 +24,14 @@ def DataProcessing():
 
     # segmentation at 50% @ 55Hz 2s
     while count < 5:
-       
-        if(count == 4):
-            last_row = store_data.tail(1)
-            print("If count is 4, last row:", last_row)
-        
+          
         a = cleaned_data[i:i+22].copy()
         a.loc['mean'] = a.mean()
         a.loc['std'] = a.std()
         
         mean_data = mean_data.append(a.loc['mean'], ignore_index = True) #store in mean_data list
         std_data = std_data.append(a.loc['std'], ignore_index = True)    #store in std_data list
-
-        
-            
+      
         i += 21
         count += 1
     
@@ -78,21 +52,15 @@ def DataProcessing():
                                                      'GyX 3': 'std_GyX 3', 'GyY 3': 'std_GyY 3', 'GyZ 3': 'std_GyZ 3',})
     
     
-    
-    print("mean data:",mean_data)
-    print("count:",count)
     # combine features extracted into 1 
-
     extracted_data = mean_data.join(std_data) #merge the mean_data list and std_data list
-
     
-    print(extracted_data.head(10))
-    last_row.to_csv(r'C:/Users/WEARE1/Desktop/cg3002/Machine Learning/wiper3.csv',index=False) #overwrite it
-#     data.to_csv(r'C:/Users/WEARE1/Desktop/cg3002/Machine Learning/wiper.csv',index=False)
-         
-    end_time = datetime.datetime.now()
-    time_taken = end_time - start_time
-    print("Time taken:",time_taken)
+    print(extracted_data)
+    
+    #store row 110
+    data = pd.read_csv('C:/Users/WEARE1/Desktop/cg3002/Machine Learning/wiper.csv')
+    data = data[110::].copy()
+    data.to_csv(r'C:/Users/WEARE1/Desktop/cg3002/Machine Learning/wiper.csv',index=False)
     
 
 # Wait for 1 seconds
