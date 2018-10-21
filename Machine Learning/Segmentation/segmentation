@@ -9,7 +9,9 @@ def DataProcessing():
     
     # read data
     data = pd.read_csv('C:/Users/WEARE1/Desktop/cg3002/Machine Learning/wiper.csv')
-
+    
+    print(data.head(110))
+    
     cleaned_data = data.drop(['voltage','current','power','energy'],axis =1) #delete column
     cleaned_data = pd.DataFrame(preprocessing.scale(data.drop(['voltage','current','power','energy'],axis =1)),
                                                    columns=['AcX 1', 'AcY 1', 'AcZ 1', 'GyX 1', 'GyY 1', 'GyZ 1', 
@@ -61,6 +63,8 @@ def DataProcessing():
     data = pd.read_csv('C:/Users/WEARE1/Desktop/cg3002/Machine Learning/wiper.csv')
     data = data[110::].copy()
     data.to_csv(r'C:/Users/WEARE1/Desktop/cg3002/Machine Learning/wiper.csv',index=False)
+    
+    print(data.head(110))
     
 
 # Wait for 1 seconds
